@@ -1,0 +1,10 @@
+{
+  "id": "leftcoast-authorship",
+  "name": "Leftcoast Authorship",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "iA Writer-style per-character AI authorship tracking. Paste text as AI-authored and see a gradient marker that persists across sessions and devices.",
+  "author": "Leftcoast",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
