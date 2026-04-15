@@ -958,24 +958,67 @@ class AuthorshipSettingTab extends PluginSettingTab {
     if (!this.aboutPreviewEl) return;
     this.aboutPreviewEl.empty();
 
-    const stops = stopsFromHex(this.plugin.settings.gradientStops);
     const texts: string[] = [
       "Authorship data is stored in a .authorship/ folder at the root of your vault. The folder syncs with Obsidian Sync, iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically.",
       "Typing inside AI-styled text produces normal characters. The gradient only survives where you haven't edited it — so the marker fades in proportion to how much of the text has come from you.",
       "A project of the Leviathan Duck from Leftcoast Media House Inc.",
     ];
 
+    // Create spans first. Apply colors after the browser lays them out, so we
+    // can read actual rendered positions and drive the real ribbon algorithm
+    // (honoring orientation and waviness).
+    const spans: HTMLSpanElement[] = [];
     for (const text of texts) {
       const p = this.aboutPreviewEl.createEl("p");
-      const n = text.length;
-      const center = (n - 1) / 2;
-      for (let i = 0; i < n; i++) {
-        const dist = Math.abs(i - center);
-        const d = center === 0 ? 0 : dist / center;
-        const color = colorAt(stops, d);
-        const span = p.createSpan({ text: text[i] });
-        span.setAttr("style", `color: ${color};`);
+      for (const char of text) {
+        const span = p.createSpan({ text: char });
+        spans.push(span);
       }
+    }
+
+    requestAnimationFrame(() => this.applyPreviewColors(spans));
+  }
+
+  private applyPreviewColors(spans: HTMLSpanElement[]) {
+    if (!this.aboutPreviewEl || spans.length === 0) return;
+
+    const stops = stopsFromHex(this.plugin.settings.gradientStops);
+    const orientation = this.plugin.settings.orientation;
+    const waviness = this.plugin.settings.waviness;
+
+    const containerRect = this.aboutPreviewEl.getBoundingClientRect();
+    const containerLeft = containerRect.left;
+    const containerTop = containerRect.top;
+    const width = Math.max(1, containerRect.width);
+    const height = Math.max(1, containerRect.height);
+
+    const baseCenterX = width / 2;
+    const baseCenterY = height / 2;
+    const horizontalRadius = width / 2;
+    const verticalRadius = height / 2;
+
+    const firstRect = spans[0].getBoundingClientRect();
+    const lineHeight = Math.max(firstRect.height, 16);
+    const wavePeriod = Math.max(lineHeight, 24) * 8;
+    const amp = clamp(width * 0.02, 8, 18) * waviness;
+
+    for (const span of spans) {
+      const r = span.getBoundingClientRect();
+      const x = r.left - containerLeft + r.width / 2;
+      const y = r.top - containerTop + r.height / 2;
+
+      let d: number;
+      if (orientation === "vertical") {
+        const phase = (y / wavePeriod) * Math.PI * 2;
+        const centerX = baseCenterX + Math.sin(phase) * amp;
+        d = clamp(Math.abs(x - centerX) / horizontalRadius, 0, 1);
+      } else {
+        const phase = (x / wavePeriod) * Math.PI * 2;
+        const centerY = baseCenterY + Math.sin(phase) * amp;
+        d = clamp(Math.abs(y - centerY) / verticalRadius, 0, 1);
+      }
+
+      span.setAttr("style", `color: ${colorAt(stops, d)};`);
     }
   }
 
