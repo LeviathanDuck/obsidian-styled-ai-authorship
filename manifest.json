@@ -1,7 +1,7 @@
 {
   "id": "aistyled-authorship",
   "name": "Ai Styled Authorship",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.4.0",
   "description": "iA Writer-style per-character AI authorship tracking. Paste text as AI-authored and see a gradient marker that persists across sessions and devices.",
   "author": "Leviathan Duck — Leftcoast Media House Inc.",

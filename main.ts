@@ -1011,6 +1011,20 @@ class AuthorshipSettingTab extends PluginSettingTab {
       });
     }
 
+    // Inline Reset button alongside the preset chicklets.
+    const resetBtn = presetRow.createEl("button", { text: "Reset" });
+    resetBtn.setAttr(
+      "style",
+      "border: 1px solid var(--background-modifier-border); border-radius: 6px; " +
+        "padding: 6px 12px; cursor: pointer; font-size: 0.9em; " +
+        "background: transparent; color: var(--text-muted);"
+    );
+    resetBtn.addEventListener("click", async () => {
+      this.plugin.settings.gradientStops = [...DEFAULT_SETTINGS.gradientStops];
+      await this.plugin.saveSettings();
+      this.display();
+    });
+
     const pickerRow = containerEl.createDiv();
     pickerRow.setAttr(
       "style",
@@ -1034,16 +1048,9 @@ class AuthorshipSettingTab extends PluginSettingTab {
       });
     }
 
-    new Setting(containerEl)
-      .setName("Reset gradient to default")
-      .setDesc("Restore the Cascade preset (pink ↔ blue).")
-      .addButton(btn =>
-        btn.setButtonText("Reset").onClick(async () => {
-          this.plugin.settings.gradientStops = [...DEFAULT_SETTINGS.gradientStops];
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
+    // Live gradient preview using the About-style text. No heading, no hint.
+    this.aboutPreviewEl = containerEl.createDiv();
+    this.renderAboutPreview();
 
     containerEl.createEl("h3", { text: "Ribbon shape" });
 
@@ -1139,15 +1146,5 @@ class AuthorshipSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "About" });
-
-    const previewHint = containerEl.createEl("p");
-    previewHint.setAttr("style", "color: var(--text-muted); font-size: 0.85em; margin-top: -0.4em;");
-    previewHint.appendText(
-      "Live preview — the text below is rendered with the current gradient. Change the stops above and watch it update."
-    );
-
-    this.aboutPreviewEl = containerEl.createDiv();
-    this.renderAboutPreview();
   }
 }

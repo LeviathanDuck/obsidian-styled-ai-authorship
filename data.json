@@ -10,6 +10,8 @@
     "#CB7FE2",
     "#F08BC8"
   ],
+  "orientation": "horizontal",
+  "waviness": 1.55,
   "version": 1,
   "files": {
     "workshop/MarkdownLookBook_V 1.md": [
