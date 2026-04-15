@@ -362,13 +362,14 @@ function buildLineDecoration(color: string): Decoration {
 }
 
 function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number): GradientField {
-  const viewportRect = view.scrollDOM.getBoundingClientRect();
+  // Use contentDOM (the actual text area) as the field, not scrollDOM (the
+  // full editor including gutters and padding). This makes the blue center
+  // align with where text actually renders, so character x positions derived
+  // from charIndex * charWidth reach d=1 at the real text edges.
   const contentRect = view.contentDOM.getBoundingClientRect();
   const charWidth = Math.max(view.defaultCharacterWidth, 4);
-  const horizontalInset = Math.max(charWidth * 2, 24);
-  const fieldLeft = viewportRect.left + horizontalInset;
-  const fieldRight = viewportRect.right - horizontalInset;
-  const fieldWidth = Math.max(fieldRight - fieldLeft, charWidth * 8);
+  const fieldLeft = contentRect.left;
+  const fieldWidth = Math.max(contentRect.width, charWidth * 8);
   const topBlock = view.lineBlockAt(rangeFrom);
   const bottomBlock = view.lineBlockAt(rangeTo);
   const rangeTop = topBlock.top;
@@ -384,7 +385,7 @@ function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number
     verticalRadius: Math.max(fieldHeight / 2, topBlock.height),
     fieldLeft,
     fieldSpan: fieldWidth,
-    contentLeft: contentRect.left,
+    contentLeft: fieldLeft,
     charWidth,
     waveAmplitude: clamp(fieldWidth * 0.02, 8, 18),
     wavePeriod: Math.max(topBlock.height, 24) * 8,
@@ -1110,8 +1111,8 @@ class AuthorshipSettingTab extends PluginSettingTab {
       )
       .addDropdown(dropdown =>
         dropdown
-          .addOption("vertical", "Vertical (default)")
-          .addOption("horizontal", "Horizontal (river)")
+          .addOption("vertical", "River (default)")
+          .addOption("horizontal", "Sunset")
           .setValue(this.plugin.settings.orientation)
           .onChange(async value => {
             this.plugin.settings.orientation = value as GradientOrientation;
