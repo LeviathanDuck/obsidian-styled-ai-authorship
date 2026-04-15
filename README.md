@@ -1,4 +1,4 @@
-# Leftcoast Authorship
+# Ai Styled Text Authorship For Obsidian. 
 
 An Obsidian plugin that replicates iA Writer's "paste as AI author" feature: text pasted via the plugin's command is visually marked with a colored gradient, tracked per-character, and persists across sessions and devices.
 
