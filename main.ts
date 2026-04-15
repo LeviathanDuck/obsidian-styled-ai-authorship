@@ -42,6 +42,8 @@ interface GradientField {
   verticalRadius: number;
   fieldLeft: number;
   fieldSpan: number;
+  contentLeft: number;
+  charWidth: number;
   waveAmplitude: number;
   wavePeriod: number;
 }
@@ -361,10 +363,12 @@ function buildLineDecoration(color: string): Decoration {
 
 function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number): GradientField {
   const viewportRect = view.scrollDOM.getBoundingClientRect();
-  const horizontalInset = Math.max(view.defaultCharacterWidth * 2, 24);
+  const contentRect = view.contentDOM.getBoundingClientRect();
+  const charWidth = Math.max(view.defaultCharacterWidth, 4);
+  const horizontalInset = Math.max(charWidth * 2, 24);
   const fieldLeft = viewportRect.left + horizontalInset;
   const fieldRight = viewportRect.right - horizontalInset;
-  const fieldWidth = Math.max(fieldRight - fieldLeft, view.defaultCharacterWidth * 8);
+  const fieldWidth = Math.max(fieldRight - fieldLeft, charWidth * 8);
   const topBlock = view.lineBlockAt(rangeFrom);
   const bottomBlock = view.lineBlockAt(rangeTo);
   const rangeTop = topBlock.top;
@@ -380,6 +384,8 @@ function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number
     verticalRadius: Math.max(fieldHeight / 2, topBlock.height),
     fieldLeft,
     fieldSpan: fieldWidth,
+    contentLeft: contentRect.left,
+    charWidth,
     waveAmplitude: clamp(fieldWidth * 0.02, 8, 18),
     wavePeriod: Math.max(topBlock.height, 24) * 8,
   };
@@ -568,7 +574,6 @@ function createHighlightPlugin(
               const segTo = Math.min(block.to, slice.to);
 
               if (segTo > segFrom) {
-                const blockLen = Math.max(1, block.to - block.from);
                 const rowY = block.top + block.height / 2;
 
                 if (orientation === "vertical") {
@@ -577,8 +582,10 @@ function createHighlightPlugin(
                   const centerX = field.baseCenterX + Math.sin(phase) * amp;
                   for (let pos = segFrom; pos < segTo; pos++) {
                     const chunkEnd = pos + 1;
-                    const normalized = (pos - block.from) / blockLen;
-                    const x = field.fieldLeft + normalized * field.fieldSpan;
+                    // Real char position: content left + (char index within line) * charWidth.
+                    // Gives each char its actual-ish on-screen x, so short lines stay short
+                    // instead of being stretched across the full field width.
+                    const x = field.contentLeft + (pos - block.from) * field.charWidth;
                     const d = clamp(Math.abs(x - centerX) / field.horizontalRadius, 0, 1);
                     builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
                   }
@@ -586,9 +593,8 @@ function createHighlightPlugin(
                   // Horizontal ribbon ("river"): runs left-to-right, drifts up/down.
                   for (let pos = segFrom; pos < segTo; pos++) {
                     const chunkEnd = pos + 1;
-                    const normalized = (pos - block.from) / blockLen;
-                    const x = field.fieldLeft + normalized * field.fieldSpan;
-                    const phase = ((x - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
+                    const x = field.contentLeft + (pos - block.from) * field.charWidth;
+                    const phase = ((x - field.contentLeft) / field.wavePeriod) * Math.PI * 2;
                     const centerY = field.baseCenterY + Math.sin(phase) * amp;
                     const d = clamp(Math.abs(rowY - centerY) / field.verticalRadius, 0, 1);
                     builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
