@@ -51,10 +51,16 @@ interface SidecarData {
 
 interface AuthorshipSettings {
   showAIStyling: boolean;
+  showPasteMenuItem: boolean;
+  showMarkSelectionMenuItem: boolean;
+  showRemoveMenuItem: boolean;
 }
 
 const DEFAULT_SETTINGS: AuthorshipSettings = {
   showAIStyling: true,
+  showPasteMenuItem: true,
+  showMarkSelectionMenuItem: true,
+  showRemoveMenuItem: true,
 };
 
 // ---- state effects & field ----
@@ -556,14 +562,16 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, _view: MarkdownView) => {
-        menu.addItem(item => {
-          item
-            .setTitle("Paste with AI Style")
-            .setIcon("clipboard-paste")
-            .onClick(async () => {
-              await this.runPasteWithAI(editor);
-            });
-        });
+        if (this.settings.showPasteMenuItem) {
+          menu.addItem(item => {
+            item
+              .setTitle("Paste with AI Style")
+              .setIcon("clipboard-paste")
+              .onClick(async () => {
+                await this.runPasteWithAI(editor);
+              });
+          });
+        }
 
         // @ts-ignore Obsidian exposes the CM6 EditorView via editor.cm
         const cm: EditorView | undefined = (editor as any).cm;
@@ -572,7 +580,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
           // Show "Mark Selection as AI Style" when selection is non-empty and
           // not already fully covered by an AI range.
-          if (!sel.empty && !selectionFullyAI(cm, sel.from, sel.to)) {
+          if (this.settings.showMarkSelectionMenuItem && !sel.empty && !selectionFullyAI(cm, sel.from, sel.to)) {
             menu.addItem(item => {
               item
                 .setTitle("Mark Selection as AI Style")
@@ -584,7 +592,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
           }
 
           // Show "Remove AI Styling" when selection overlaps an AI range.
-          if (!sel.empty && selectionOverlapsAI(cm, sel.from, sel.to)) {
+          if (this.settings.showRemoveMenuItem && !sel.empty && selectionOverlapsAI(cm, sel.from, sel.to)) {
             menu.addItem(item => {
               item
                 .setTitle("Remove AI Styling")
@@ -848,6 +856,50 @@ class AuthorshipSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    containerEl.createEl("h3", { text: "Right-click menu" });
+
+    new Setting(containerEl)
+      .setName('Show "Paste with AI Style"')
+      .setDesc("Show the paste-as-AI item in the editor's right-click menu.")
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.showPasteMenuItem)
+          .onChange(async value => {
+            this.plugin.settings.showPasteMenuItem = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Show "Mark Selection as AI Style"')
+      .setDesc("Show the mark-as-AI item in the right-click menu when text is selected.")
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.showMarkSelectionMenuItem)
+          .onChange(async value => {
+            this.plugin.settings.showMarkSelectionMenuItem = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Show "Remove AI Styling"')
+      .setDesc("Show the remove-styling item in the right-click menu when AI-styled text is selected.")
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.showRemoveMenuItem)
+          .onChange(async value => {
+            this.plugin.settings.showRemoveMenuItem = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    const paletteHint = containerEl.createEl("p");
+    paletteHint.setAttr("style", "color: var(--text-muted); font-size: 0.9em;");
+    paletteHint.appendText(
+      "These toggles only affect the right-click menu. All three actions remain available from the command palette and via hotkeys you've assigned."
+    );
 
     containerEl.createEl("h3", { text: "About" });
 
