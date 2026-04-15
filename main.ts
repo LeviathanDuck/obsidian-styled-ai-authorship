@@ -35,10 +35,21 @@ interface Stop {
 
 interface GradientField {
   baseCenterX: number;
+  baseCenterY: number;
   rangeTop: number;
-  radius: number;
+  rangeBottom: number;
+  horizontalRadius: number;
+  verticalRadius: number;
+  fieldLeft: number;
+  fieldSpan: number;
   waveAmplitude: number;
   wavePeriod: number;
+}
+
+interface GradientConfig {
+  stops: Stop[];
+  orientation: GradientOrientation;
+  waviness: number;
 }
 
 interface SidecarData {
@@ -49,12 +60,16 @@ interface SidecarData {
 
 // ---- settings ----
 
+type GradientOrientation = "vertical" | "horizontal";
+
 interface AuthorshipSettings {
   showAIStyling: boolean;
   showPasteMenuItem: boolean;
   showMarkSelectionMenuItem: boolean;
   showRemoveMenuItem: boolean;
   gradientStops: string[];
+  orientation: GradientOrientation;
+  waviness: number; // 0.0 = flat, 1.0 = default, 2.0 = strong
 }
 
 const DEFAULT_SETTINGS: AuthorshipSettings = {
@@ -69,6 +84,8 @@ const DEFAULT_SETTINGS: AuthorshipSettings = {
     "#CB7FE2",
     "#F08BC8",
   ],
+  orientation: "vertical",
+  waviness: 1.0,
 };
 
 // ---- state effects & field ----
@@ -342,20 +359,29 @@ function buildLineDecoration(color: string): Decoration {
   });
 }
 
-function buildGradientField(view: EditorView, rangeFrom: number): GradientField {
+function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number): GradientField {
   const viewportRect = view.scrollDOM.getBoundingClientRect();
   const horizontalInset = Math.max(view.defaultCharacterWidth * 2, 24);
   const fieldLeft = viewportRect.left + horizontalInset;
   const fieldRight = viewportRect.right - horizontalInset;
   const fieldWidth = Math.max(fieldRight - fieldLeft, view.defaultCharacterWidth * 8);
-  const lineBlock = view.lineBlockAt(rangeFrom);
+  const topBlock = view.lineBlockAt(rangeFrom);
+  const bottomBlock = view.lineBlockAt(rangeTo);
+  const rangeTop = topBlock.top;
+  const rangeBottom = bottomBlock.bottom;
+  const fieldHeight = Math.max(rangeBottom - rangeTop, topBlock.height);
 
   return {
     baseCenterX: fieldLeft + fieldWidth / 2,
-    rangeTop: lineBlock.top,
-    radius: fieldWidth / 2,
+    baseCenterY: rangeTop + fieldHeight / 2,
+    rangeTop,
+    rangeBottom,
+    horizontalRadius: fieldWidth / 2,
+    verticalRadius: Math.max(fieldHeight / 2, topBlock.height),
+    fieldLeft,
+    fieldSpan: fieldWidth,
     waveAmplitude: clamp(fieldWidth * 0.02, 8, 18),
-    wavePeriod: Math.max(lineBlock.height, 24) * 8,
+    wavePeriod: Math.max(topBlock.height, 24) * 8,
   };
 }
 
@@ -487,7 +513,7 @@ const clipboardHandlers = EditorView.domEventHandlers({
 
 function createHighlightPlugin(
   onRangesMaybeChanged: (view: EditorView) => void,
-  getStops: () => Stop[]
+  getConfig: () => GradientConfig
 ) {
   return ViewPlugin.fromClass(
     class {
@@ -524,14 +550,16 @@ function createHighlightPlugin(
         const builder = new RangeSetBuilder<Decoration>();
         const ranges = view.state.field(aiRangeField, false) ?? [];
         const docLength = view.state.doc.length;
-        const stops = getStops();
+        const { stops, orientation, waviness } = getConfig();
 
         for (const range of ranges) {
           const from = Math.max(0, range.from);
           const to = Math.min(docLength, range.to);
           if (to <= from) continue;
 
-          const field = buildGradientField(view, from);
+          const field = buildGradientField(view, from, to);
+          const amp = field.waveAmplitude * waviness;
+
           for (const slice of buildVisibleSlices(view, { from, to })) {
             let cursor = slice.from;
             while (cursor <= slice.to && cursor <= docLength) {
@@ -540,16 +568,31 @@ function createHighlightPlugin(
               const segTo = Math.min(block.to, slice.to);
 
               if (segTo > segFrom) {
-                const centerX = rowCenterX(field, block.top);
                 const blockLen = Math.max(1, block.to - block.from);
-                const fieldLeft = field.baseCenterX - field.radius;
-                const fieldSpan = field.radius * 2;
-                for (let pos = segFrom; pos < segTo; pos++) {
-                  const chunkEnd = pos + 1;
-                  const normalized = (pos - block.from) / blockLen;
-                  const x = fieldLeft + normalized * fieldSpan;
-                  const d = clamp(Math.abs(x - centerX) / field.radius, 0, 1);
-                  builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
+                const rowY = block.top + block.height / 2;
+
+                if (orientation === "vertical") {
+                  // Vertical ribbon: runs top-to-bottom, drifts left/right.
+                  const phase = ((block.top - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
+                  const centerX = field.baseCenterX + Math.sin(phase) * amp;
+                  for (let pos = segFrom; pos < segTo; pos++) {
+                    const chunkEnd = pos + 1;
+                    const normalized = (pos - block.from) / blockLen;
+                    const x = field.fieldLeft + normalized * field.fieldSpan;
+                    const d = clamp(Math.abs(x - centerX) / field.horizontalRadius, 0, 1);
+                    builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
+                  }
+                } else {
+                  // Horizontal ribbon ("river"): runs left-to-right, drifts up/down.
+                  for (let pos = segFrom; pos < segTo; pos++) {
+                    const chunkEnd = pos + 1;
+                    const normalized = (pos - block.from) / blockLen;
+                    const x = field.fieldLeft + normalized * field.fieldSpan;
+                    const phase = ((x - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
+                    const centerY = field.baseCenterY + Math.sin(phase) * amp;
+                    const d = clamp(Math.abs(rowY - centerY) / field.verticalRadius, 0, 1);
+                    builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
+                  }
                 }
               }
 
@@ -583,7 +626,11 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       clipboardHandlers,
       createHighlightPlugin(
         view => this.onRangesMaybeChanged(view),
-        () => stopsFromHex(this.settings.gradientStops)
+        () => ({
+          stops: stopsFromHex(this.settings.gradientStops),
+          orientation: this.settings.orientation,
+          waviness: this.settings.waviness,
+        })
       ),
     ]);
 
@@ -936,20 +983,6 @@ class AuthorshipSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl)
-      .setName("Show AI authorship styling")
-      .setDesc(
-        "Display the gradient on AI-tagged text. When off, the gradient is hidden but authorship metadata is preserved — turn it back on to see the marker again."
-      )
-      .addToggle(toggle =>
-        toggle
-          .setValue(this.plugin.settings.showAIStyling)
-          .onChange(async value => {
-            this.plugin.settings.showAIStyling = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
     containerEl.createEl("h3", { text: "Gradient colors" });
 
     const presetHint = containerEl.createEl("p");
@@ -1012,6 +1045,42 @@ class AuthorshipSettingTab extends PluginSettingTab {
         })
       );
 
+    containerEl.createEl("h3", { text: "Ribbon shape" });
+
+    new Setting(containerEl)
+      .setName("Orientation")
+      .setDesc(
+        "Vertical = ribbon runs top-to-bottom through the block with a left-right drift. Horizontal = ribbon runs left-to-right like a river, drifting up and down as you scan along."
+      )
+      .addDropdown(dropdown =>
+        dropdown
+          .addOption("vertical", "Vertical (default)")
+          .addOption("horizontal", "Horizontal (river)")
+          .setValue(this.plugin.settings.orientation)
+          .onChange(async value => {
+            this.plugin.settings.orientation = value as GradientOrientation;
+            await this.plugin.saveSettings();
+            this.renderAboutPreview();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Waviness")
+      .setDesc(
+        "How much the ribbon meanders. 0% = straight line, 100% = default drift, 200% = strong wave."
+      )
+      .addSlider(slider =>
+        slider
+          .setLimits(0, 200, 5)
+          .setValue(Math.round(this.plugin.settings.waviness * 100))
+          .setDynamicTooltip()
+          .onChange(async value => {
+            this.plugin.settings.waviness = value / 100;
+            await this.plugin.saveSettings();
+            this.renderAboutPreview();
+          })
+      );
+
     containerEl.createEl("h3", { text: "Right-click menu" });
 
     new Setting(containerEl)
@@ -1055,6 +1124,20 @@ class AuthorshipSettingTab extends PluginSettingTab {
     paletteHint.appendText(
       "These toggles only affect the right-click menu. All three actions remain available from the command palette and via hotkeys you've assigned."
     );
+
+    new Setting(containerEl)
+      .setName("Show AI authorship styling")
+      .setDesc(
+        "Display the gradient on AI-tagged text. When off, the gradient is hidden but authorship metadata is preserved — turn it back on to see the marker again."
+      )
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.showAIStyling)
+          .onChange(async value => {
+            this.plugin.settings.showAIStyling = value;
+            await this.plugin.saveSettings();
+          })
+      );
 
     containerEl.createEl("h3", { text: "About" });
 

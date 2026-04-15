@@ -4,11 +4,11 @@
   "showMarkSelectionMenuItem": true,
   "showRemoveMenuItem": true,
   "gradientStops": [
-    "#6B6B6B",
-    "#8A8A8A",
-    "#A8A8A8",
-    "#C4C4C4",
-    "#E0E0E0"
+    "#78A8FF",
+    "#8F98FF",
+    "#A786F3",
+    "#CB7FE2",
+    "#F08BC8"
   ],
   "version": 1,
   "files": {
