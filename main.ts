@@ -900,10 +900,36 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
 class AuthorshipSettingTab extends PluginSettingTab {
   plugin: LeftcoastAuthorshipPlugin;
+  private aboutPreviewEl: HTMLElement | null = null;
 
   constructor(app: App, plugin: LeftcoastAuthorshipPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+  }
+
+  private renderAboutPreview() {
+    if (!this.aboutPreviewEl) return;
+    this.aboutPreviewEl.empty();
+
+    const stops = stopsFromHex(this.plugin.settings.gradientStops);
+    const texts: string[] = [
+      "Authorship data is stored in a .authorship/ folder at the root of your vault. The folder syncs with Obsidian Sync, iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically.",
+      "Typing inside AI-styled text produces normal characters. The gradient only survives where you haven't edited it — so the marker fades in proportion to how much of the text has come from you.",
+      "A project of the Leviathan Duck from Leftcoast Media House Inc.",
+    ];
+
+    for (const text of texts) {
+      const p = this.aboutPreviewEl.createEl("p");
+      const n = text.length;
+      const center = (n - 1) / 2;
+      for (let i = 0; i < n; i++) {
+        const dist = Math.abs(i - center);
+        const d = center === 0 ? 0 : dist / center;
+        const color = colorAt(stops, d);
+        const span = p.createSpan({ text: text[i] });
+        span.setAttr("style", `color: ${color};`);
+      }
+    }
   }
 
   display(): void {
@@ -971,16 +997,9 @@ class AuthorshipSettingTab extends PluginSettingTab {
       input.addEventListener("input", async () => {
         this.plugin.settings.gradientStops[i] = input.value.toUpperCase();
         await this.plugin.saveSettings();
+        this.renderAboutPreview();
       });
     }
-
-    const previewRow = containerEl.createDiv();
-    const previewGradient = `linear-gradient(90deg, ${this.plugin.settings.gradientStops.join(", ")})`;
-    previewRow.setAttr(
-      "style",
-      `height: 20px; border-radius: 6px; background: ${previewGradient}; ` +
-        "margin-bottom: 1em; border: 1px solid var(--background-modifier-border);"
-    );
 
     new Setting(containerEl)
       .setName("Reset gradient to default")
@@ -1039,20 +1058,13 @@ class AuthorshipSettingTab extends PluginSettingTab {
 
     containerEl.createEl("h3", { text: "About" });
 
-    const p1 = containerEl.createEl("p");
-    p1.appendText("Authorship data is stored in a ");
-    p1.createEl("code", { text: ".authorship/" });
-    p1.appendText(
-      " folder at the root of your vault. The folder syncs with Obsidian Sync, iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically."
+    const previewHint = containerEl.createEl("p");
+    previewHint.setAttr("style", "color: var(--text-muted); font-size: 0.85em; margin-top: -0.4em;");
+    previewHint.appendText(
+      "Live preview — the text below is rendered with the current gradient. Change the stops above and watch it update."
     );
 
-    const p2 = containerEl.createEl("p");
-    p2.appendText(
-      "Typing inside AI-styled text produces normal characters. The gradient only survives where you haven't edited it — so the marker fades in proportion to how much of the text has come from you."
-    );
-
-    const p3 = containerEl.createEl("p");
-    p3.setAttr("style", "color: var(--text-muted); font-size: 0.9em;");
-    p3.appendText("A project of the Leviathan Duck from Leftcoast Media House Inc.");
+    this.aboutPreviewEl = containerEl.createDiv();
+    this.renderAboutPreview();
   }
 }
