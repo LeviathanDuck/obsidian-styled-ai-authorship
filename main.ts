@@ -3,6 +3,7 @@ import {
   MarkdownView,
   Menu,
   Notice,
+  Platform,
   Plugin,
   TFile,
   normalizePath,
@@ -47,6 +48,7 @@ interface SidecarData {
 
 const addAIRange = StateEffect.define<AIRange>();
 const replaceAIRanges = StateEffect.define<AIRange[]>();
+const clearAIRange = StateEffect.define<AIRange>();
 
 const aiRangeField = StateField.define<AIRange[]>({
   create: () => [],
@@ -67,24 +69,17 @@ const aiRangeField = StateField.define<AIRange[]>({
     // `addAIRange` effects (step 3) re-add tagging for deliberate AI pastes.
     tr.changes.iterChanges((_fromA, _toA, fromB, toB) => {
       if (toB <= fromB) return; // pure deletion, handled by mapPos above
-      const after: AIRange[] = [];
-      for (const seg of next) {
-        if (seg.to <= fromB || seg.from >= toB) {
-          after.push(seg);
-        } else {
-          if (seg.from < fromB) after.push({ from: seg.from, to: fromB });
-          if (seg.to > toB) after.push({ from: toB, to: seg.to });
-        }
-      }
-      next = after;
+      next = subtractInterval(next, fromB, toB);
     });
 
-    // Step 3: apply explicit effects (Paste as AI, hydration, etc.)
+    // Step 3: apply explicit effects (Paste as AI, hydration, Remove AI, etc.)
     for (const effect of tr.effects) {
       if (effect.is(addAIRange)) {
         next = mergeRange(next, effect.value);
       } else if (effect.is(replaceAIRanges)) {
         next = normalizeRanges(effect.value);
+      } else if (effect.is(clearAIRange)) {
+        next = subtractInterval(next, effect.value.from, effect.value.to);
       }
     }
 
@@ -110,6 +105,29 @@ function mergeRange(ranges: AIRange[], incoming: AIRange): AIRange[] {
   }
 
   return merged;
+}
+
+function subtractInterval(ranges: AIRange[], excFrom: number, excTo: number): AIRange[] {
+  if (excTo <= excFrom) return ranges;
+  const result: AIRange[] = [];
+  for (const seg of ranges) {
+    if (seg.to <= excFrom || seg.from >= excTo) {
+      result.push(seg);
+    } else {
+      if (seg.from < excFrom) result.push({ from: seg.from, to: excFrom });
+      if (seg.to > excTo) result.push({ from: excTo, to: seg.to });
+    }
+  }
+  return result;
+}
+
+function selectionOverlapsAI(view: EditorView, selFrom: number, selTo: number): boolean {
+  if (selTo <= selFrom) return false;
+  const ranges = view.state.field(aiRangeField, false) ?? [];
+  for (const r of ranges) {
+    if (r.to > selFrom && r.from < selTo) return true;
+  }
+  return false;
 }
 
 function normalizeRanges(ranges: AIRange[]): AIRange[] {
@@ -290,6 +308,19 @@ function rowCenterX(field: GradientField, rowTop: number): number {
   return field.baseCenterX + Math.sin(phase) * field.waveAmplitude;
 }
 
+// ---- mobile-safe clipboard read ----
+// Returns null if clipboard read fails (permission denied, API unavailable).
+// Returns empty string if clipboard read succeeded but is empty.
+async function readClipboardText(): Promise<string | null> {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return null;
+    const text = await navigator.clipboard.readText();
+    return text ?? "";
+  } catch {
+    return null;
+  }
+}
+
 // ---- clipboard handlers: copy/cut/paste preserve authorship within the vault ----
 
 const CLIPBOARD_MIME = "application/x-leftcoast-authorship+json";
@@ -468,14 +499,17 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
     this.addCommand({
       id: "paste-as-ai",
-      name: "Paste as Styled AI",
+      name: "Paste with AI Style",
       editorCallback: async (editor: Editor) => {
-        const text = await navigator.clipboard.readText().catch(() => "");
-        if (!text) {
-          new Notice("Clipboard is empty");
-          return;
-        }
-        this.pasteAsAI(editor, text);
+        await this.runPasteWithAI(editor);
+      },
+    });
+
+    this.addCommand({
+      id: "remove-ai-styling",
+      name: "Remove AI Styling",
+      editorCallback: (editor: Editor) => {
+        this.runRemoveAI(editor);
       },
     });
 
@@ -483,17 +517,29 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, _view: MarkdownView) => {
         menu.addItem(item => {
           item
-            .setTitle("Paste as Styled AI")
+            .setTitle("Paste with AI Style")
             .setIcon("clipboard-paste")
             .onClick(async () => {
-              const text = await navigator.clipboard.readText().catch(() => "");
-              if (!text) {
-                new Notice("Clipboard is empty");
-                return;
-              }
-              this.pasteAsAI(editor, text);
+              await this.runPasteWithAI(editor);
             });
         });
+
+        // Only show "Remove AI Styling" when the selection overlaps an AI range.
+        // @ts-ignore Obsidian exposes the CM6 EditorView via editor.cm
+        const cm: EditorView | undefined = (editor as any).cm;
+        if (cm) {
+          const sel = cm.state.selection.main;
+          if (!sel.empty && selectionOverlapsAI(cm, sel.from, sel.to)) {
+            menu.addItem(item => {
+              item
+                .setTitle("Remove AI Styling")
+                .setIcon("eraser")
+                .onClick(() => {
+                  this.runRemoveAI(editor);
+                });
+            });
+          }
+        }
       })
     );
 
@@ -543,7 +589,47 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       })
     );
 
-    console.log("Leftcoast Authorship: loaded");
+    console.log(
+      `Leftcoast Authorship: loaded (${Platform.isMobile ? "mobile" : "desktop"})`
+    );
+  }
+
+  private async runPasteWithAI(editor: Editor) {
+    const text = await readClipboardText();
+    if (text == null) {
+      new Notice(
+        Platform.isMobile
+          ? "Could not read clipboard. Grant clipboard access and try again."
+          : "Could not read clipboard"
+      );
+      return;
+    }
+    if (text.length === 0) {
+      new Notice("Clipboard is empty");
+      return;
+    }
+    this.pasteAsAI(editor, text);
+  }
+
+  private runRemoveAI(editor: Editor) {
+    // @ts-ignore Obsidian exposes the CM6 EditorView via editor.cm
+    const cm: EditorView = (editor as any).cm;
+    if (!cm) {
+      new Notice("Could not access editor");
+      return;
+    }
+    const sel = cm.state.selection.main;
+    if (sel.empty) {
+      new Notice("Select AI-styled text to remove its styling");
+      return;
+    }
+    if (!selectionOverlapsAI(cm, sel.from, sel.to)) {
+      new Notice("Selection has no AI styling");
+      return;
+    }
+    cm.dispatch({
+      effects: clearAIRange.of({ from: sel.from, to: sel.to }),
+    });
   }
 
   private pasteAsAI(editor: Editor, text: string) {
