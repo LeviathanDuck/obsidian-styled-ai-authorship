@@ -664,6 +664,10 @@ const WRITE_DEBOUNCE_MS = 300;
 export default class LeftcoastAuthorshipPlugin extends Plugin {
   private writeTimers: Map<string, number> = new Map();
   private lastPersisted: Map<string, AIRange[]> = new Map();
+  // Files for which we've finished (or confirmed no need for) hydration.
+  // Writes are blocked for a file until it's in this set — prevents the
+  // "plugin wipes sidecar before it could read it" bug on startup.
+  private hydrated: Set<string> = new Set();
   settings: AuthorshipSettings = { ...DEFAULT_SETTINGS };
 
   async onload() {
@@ -782,6 +786,10 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
             this.lastPersisted.set(file.path, cached);
             this.lastPersisted.delete(oldPath);
           }
+          if (this.hydrated.has(oldPath)) {
+            this.hydrated.delete(oldPath);
+            this.hydrated.add(file.path);
+          }
         }
       })
     );
@@ -792,6 +800,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
         if (file instanceof TFile) {
           void deleteSidecar(this.app.vault.adapter, encodeSidecarPath(file.path));
           this.lastPersisted.delete(file.path);
+          this.hydrated.delete(file.path);
           const pending = this.writeTimers.get(file.path);
           if (pending !== undefined) {
             window.clearTimeout(pending);
@@ -964,26 +973,48 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     });
   }
 
-  private async hydrateFile(file: TFile) {
-    // If a write is pending, in-memory state is authoritative — don't overwrite it.
+  private async hydrateFile(file: TFile, attempt = 0) {
+    if (this.hydrated.has(file.path)) return;
+    // If a write is already pending, in-memory state is authoritative.
     if (this.writeTimers.has(file.path)) return;
 
     const view = this.findEditorView(file);
-    if (!view) return;
+    if (!view) {
+      // Editor may not yet be constructed at this moment (common on app
+      // startup). Retry with backoff up to ~1s before giving up.
+      if (attempt < 20) {
+        window.setTimeout(() => void this.hydrateFile(file, attempt + 1), 50);
+      }
+      return;
+    }
 
     const current = view.state.field(aiRangeField, false) ?? [];
-    if (current.length > 0) return; // already populated for this session
+    if (current.length > 0) {
+      // Editor already has ranges for this session. Mark hydrated so writes
+      // are allowed to persist future edits.
+      this.hydrated.add(file.path);
+      return;
+    }
 
-    const ranges = await readSidecar(this.app.vault.adapter, encodeSidecarPath(file.path));
-    if (ranges.length === 0) return;
+    const ranges = await readSidecar(
+      this.app.vault.adapter,
+      encodeSidecarPath(file.path)
+    );
+
+    if (ranges.length === 0) {
+      // No sidecar (or empty). Mark hydrated — nothing to restore, but now
+      // writes are allowed if the user adds ranges later.
+      this.hydrated.add(file.path);
+      return;
+    }
 
     // Dispatch out-of-band so we don't run during a host update cycle.
     queueMicrotask(() => {
-      // Re-check the view is still live and for the same file
       const liveView = this.findEditorView(file);
       if (!liveView) return;
       liveView.dispatch({ effects: replaceAIRanges.of(ranges) });
       this.lastPersisted.set(file.path, ranges);
+      this.hydrated.add(file.path);
     });
   }
 
@@ -1015,6 +1046,17 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     if (!path) return;
     const ranges = view.state.field(aiRangeField, false) ?? [];
     const normalized = normalizeRanges(ranges);
+
+    // Block empty writes before hydration — otherwise the first update
+    // after startup (field=[]) would overwrite a valid sidecar with empty
+    // ranges, wiping AI data. Non-empty writes are allowed pre-hydration
+    // because they're strictly additive user intent (Paste with AI Style,
+    // Mark Selection, etc.) and flipping the file to hydrated here is safe.
+    if (!this.hydrated.has(path)) {
+      if (normalized.length === 0) return;
+      this.hydrated.add(path);
+    }
+
     const last = this.lastPersisted.get(path);
     if (last && sameRanges(last, normalized)) return;
     this.scheduleSidecarWrite(path, normalized);

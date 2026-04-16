@@ -4,14 +4,15 @@
   "showMarkSelectionMenuItem": true,
   "showRemoveMenuItem": true,
   "gradientStops": [
-    "#78A8FF",
-    "#8F98FF",
-    "#A786F3",
-    "#CB7FE2",
-    "#F08BC8"
+    "#0B7FB3",
+    "#0AAAB8",
+    "#2ED3B5",
+    "#7DE8AA",
+    "#C4F0A3"
   ],
   "orientation": "vertical",
-  "waviness": 0.5,
+  "waviness": 1.15,
+  "showInReadingMode": false,
   "version": 1,
   "files": {
     "workshop/MarkdownLookBook_V 1.md": [
