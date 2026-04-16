@@ -229,34 +229,61 @@ const SIDECAR_README_FILENAME = "README.md";
 const SIDECAR_README_BODY = `# AI Styled Authorship — sync data
 
 This folder exists to sync AI authorship styling across your devices.
-Each note that has AI-pasted text gets a small JSON sidecar here, tracking
-which character ranges the plugin should color as AI-authored.
+Each note that has AI-pasted text gets a small JSON sidecar here,
+tracking which character ranges the plugin should color as AI-authored.
 
 ## Hide this folder in Obsidian
 
-You can hide this folder from the file explorer without affecting sync:
+You can hide this folder from the file explorer without affecting sync.
+
+**Option A — one click (recommended):** Open the plugin's settings
+(Settings → Community plugins → AI Styled Authorship → Options), expand
+the **Installation instructions** section if it isn't already, and
+click **Hide z-author-sync/ folder**.
+
+**Option B — manual via Settings:**
 
 1. Open **Settings → Files and links**.
 2. Under **Excluded files**, click **Add excluded folder**.
 3. Type: \`z-author-sync/\`
 4. Close settings.
 
-The folder will stop appearing in searches, graph views, and the file
-explorer. Sync and the plugin still read and write here normally.
+**Option C — right-click (only if you have it):** Some file-management
+plugins (such as *File Hider*) add a right-click *Hide* item to the
+file explorer. If you have one of those plugins installed, right-click
+this folder and pick the hide/exclude option. Vanilla Obsidian's
+right-click menu does not include this — use A or B if you don't have
+an extension that provides it.
+
+Once hidden, the folder stops appearing in searches, graph views, and
+the file explorer. Sync and the plugin still read and write here
+normally.
+
+## Commands
+
+Three commands are available via the command palette (Cmd/Ctrl+P) or a
+hotkey you assign in Settings → Hotkeys:
+
+- **Paste as AI** — paste clipboard contents marked as AI-authored so
+  the gradient is applied immediately.
+- **Mark selection as AI** — tag currently selected text as
+  AI-authored.
+- **Remove AI styling** — clear AI styling from the selection (or the
+  current note if nothing is selected).
 
 ## Why the \`z-\` prefix?
 
 The folder is named \`z-author-sync\` so it sorts to the bottom of the
 file explorer by default, keeping it out of the way. Older versions of
-the plugin used \`authorship/\` — sidecars are migrated automatically on
-load.
+the plugin used \`authorship/\` — sidecars are migrated automatically
+on load.
 
 ## Safe to delete?
 
 Deleting this folder erases all AI-authorship gradients in your vault.
 The plugin will rebuild sidecars as you paste new AI text, but existing
 styling on older notes will be lost. If you just want the folder out of
-sight, use the excluded-folder setting above instead.
+sight, use one of the hide options above instead.
 
 ---
 
@@ -1579,82 +1606,185 @@ class AuthorshipSettingTab extends PluginSettingTab {
     }
   }
 
-  private renderSyncStatusBanner() {
+  private isSidecarFolderHidden(): boolean {
+    try {
+      // @ts-ignore — internal Obsidian API
+      const filters = this.plugin.app.vault.getConfig?.("userIgnoreFilters");
+      if (!Array.isArray(filters)) return false;
+      return filters.some(
+        (f: unknown) => typeof f === "string" && f.includes(SIDECAR_FOLDER)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private hideSidecarFolder() {
+    try {
+      // @ts-ignore — internal Obsidian API
+      const existing = this.plugin.app.vault.getConfig?.("userIgnoreFilters");
+      const asArray = Array.isArray(existing) ? existing.slice() : [];
+      if (asArray.some((f: unknown) => typeof f === "string" && f.includes(SIDECAR_FOLDER))) return;
+      asArray.push(`${SIDECAR_FOLDER}/`);
+      // @ts-ignore — internal Obsidian API
+      this.plugin.app.vault.setConfig?.("userIgnoreFilters", asArray);
+    } catch (err) {
+      console.warn("AiStyled-Authorship: failed to add folder to userIgnoreFilters", err);
+    }
+  }
+
+  private renderInstallationInstructions() {
     const { containerEl } = this;
     const { syncEnabled, otherTypesEnabled } = this.detectSyncConfig();
+    const folderHidden = this.isSidecarFolderHidden();
+    const syncProblem = syncEnabled && otherTypesEnabled === false;
+    const setupComplete = folderHidden && !syncProblem;
 
-    // Only show the banner when something might need attention.
-    // Case 1: sync enabled AND we confirmed "other types" is off → red warning
-    // Case 2: sync enabled AND we couldn't detect → soft reminder
-    // Case 3: sync disabled → info only if using Obsidian Sync
-    // Case 4: "other types" is on → no banner (happy path)
-    if (syncEnabled && otherTypesEnabled === true) return;
+    const details = containerEl.createEl("details");
+    if (!setupComplete) details.setAttr("open", "");
+    details.setAttr(
+      "style",
+      "margin-bottom: 18px; border: 1px solid var(--background-modifier-border); " +
+        "border-radius: 6px; background: var(--background-secondary);"
+    );
 
-    const banner = containerEl.createDiv();
-    const isError = syncEnabled && otherTypesEnabled === false;
-    const accent = isError ? "#E57373" : "#F0B84A";
-    banner.setAttr(
+    const summary = details.createEl("summary");
+    summary.setAttr(
       "style",
-      `border-left: 4px solid ${accent}; ` +
-        "background: var(--background-secondary); " +
-        "padding: 10px 14px; margin-bottom: 16px; border-radius: 4px;"
+      "cursor: pointer; padding: 10px 14px; font-weight: 600; " +
+        "display: flex; align-items: center; justify-content: space-between; gap: 8px;"
     );
-    const title = banner.createEl("div");
-    title.setAttr(
+    summary.createSpan({ text: "Installation instructions" });
+    const statusTag = summary.createSpan();
+    statusTag.setAttr(
       "style",
-      "font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px;"
+      "font-size: 0.82em; font-weight: 400; color: var(--text-muted);"
     );
-    // Inline cloud-with-exclamation SVG — always rendered in the iCloud
-    // sync-error red so every sync banner reads as the same warning icon.
-    // Border-left accent still varies by severity.
-    const iconSpan = title.createSpan();
-    iconSpan.setAttr(
-      "style",
-      "display: inline-flex; color: #E57373; flex-shrink: 0;"
-    );
-    iconSpan.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" ' +
-      'viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
-      'aria-hidden="true">' +
-      '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>' +
-      '<path d="M12 12v4"/>' +
-      '<path d="M12 19h.01"/>' +
-      "</svg>";
-    title.createSpan({
-      text: isError
-        ? "Sync setting required for multi-device styling"
-        : "Check your sync settings for multi-device styling",
-    });
+    statusTag.setText(setupComplete ? "Setup complete ✓" : "Action needed");
 
-    const body = banner.createEl("p");
-    body.setAttr("style", "margin: 0 0 6px 0; font-size: 0.9em;");
-    if (isError) {
-      body.appendText(
-        "Obsidian Sync is running, but \"Sync all other file types\" appears to be off. " +
-        "AI styling is stored as JSON in the z-author-sync/ folder. Without this setting, " +
-        "sidecar files won't sync across devices and styling won't appear on your other devices."
-      );
-    } else if (syncEnabled) {
-      body.appendText(
-        "Obsidian Sync is running, but I can't detect whether \"Sync all other file types\" is enabled. " +
-        "For AI styling to sync across devices, make sure that setting is on. The plugin stores " +
-        "styling as JSON files in the z-author-sync/ folder at your vault root."
+    const body = details.createDiv();
+    body.setAttr("style", "padding: 0 14px 14px 14px;");
+
+    this.renderHideFolderSection(body, folderHidden);
+    this.renderSyncSetupSection(body, syncEnabled, otherTypesEnabled);
+    this.renderStyleCommandsSection(body);
+  }
+
+  private renderHideFolderSection(parent: HTMLElement, folderHidden: boolean) {
+    const section = parent.createDiv();
+    section.setAttr("style", "margin-bottom: 16px;");
+
+    const h = section.createEl("h4");
+    h.setAttr("style", "margin: 10px 0 6px 0;");
+    h.setText(
+      folderHidden
+        ? "1. Hide the sync folder ✓"
+        : "1. Hide the sync folder"
+    );
+
+    const p = section.createEl("p");
+    p.setAttr("style", "margin: 0 0 8px 0; font-size: 0.9em;");
+    if (folderHidden) {
+      p.setText(
+        "The z-author-sync/ folder is excluded from your file explorer. Sync still works normally."
       );
     } else {
-      body.appendText(
-        "If you use Obsidian Sync (or iCloud Drive / Dropbox / other vault sync), " +
-        "styling syncs via JSON files in the z-author-sync/ folder. For Obsidian Sync specifically, " +
-        "you must enable \"Sync all other file types\" in Settings → Sync."
+      p.setText(
+        "AI styling data lives in a z-author-sync/ folder at your vault root. " +
+        "Hide it from the file explorer so it stays out of the way — this doesn't affect sync."
+      );
+      const btn = section.createEl("button");
+      btn.setText("Hide z-author-sync/ folder");
+      btn.setAttr("style", "margin: 0 0 6px 0;");
+      btn.addEventListener("click", () => {
+        this.hideSidecarFolder();
+        this.display();
+      });
+
+      const alt = section.createEl("p");
+      alt.setAttr("style", "margin: 6px 0 0 0; font-size: 0.85em; color: var(--text-muted);");
+      alt.setText(
+        "Or manually: Settings → Files and links → Excluded files → Add excluded folder → z-author-sync/. " +
+        "Some file-management plugins (e.g. File Hider) also add a right-click Hide option to the file explorer."
       );
     }
+  }
 
-    const fix = banner.createEl("p");
-    fix.setAttr("style", "margin: 0; font-size: 0.85em; color: var(--text-muted);");
-    fix.appendText(
-      "Fix: Settings → Core plugins → Sync → enable \"Sync all other file types\". " +
-      "Do this on every device."
+  private renderSyncSetupSection(
+    parent: HTMLElement,
+    syncEnabled: boolean,
+    otherTypesEnabled: boolean | null
+  ) {
+    const section = parent.createDiv();
+    section.setAttr("style", "margin-bottom: 16px;");
+
+    const h = section.createEl("h4");
+    h.setAttr("style", "margin: 10px 0 6px 0;");
+
+    const p = section.createEl("p");
+    p.setAttr("style", "margin: 0; font-size: 0.9em;");
+
+    if (!syncEnabled) {
+      h.setText("2. Sync setup");
+      p.setText(
+        "Obsidian Sync doesn't appear to be running. If you use iCloud Drive, Dropbox, or another " +
+        "vault sync tool, the z-author-sync/ folder will sync automatically as part of your vault. " +
+        "If you plan to use Obsidian Sync, enable \"Sync all other file types\" in " +
+        "Settings → Core plugins → Sync on every device after you turn it on."
+      );
+    } else if (otherTypesEnabled === true) {
+      h.setText("2. Sync setup ✓");
+      p.setText(
+        "Obsidian Sync is running and \"Sync all other file types\" is on. " +
+        "Styling will sync across devices."
+      );
+    } else if (otherTypesEnabled === false) {
+      h.setText("2. Enable \"Sync all other file types\"");
+      p.setAttr(
+        "style",
+        "margin: 0; font-size: 0.9em; color: var(--text-error);"
+      );
+      p.setText(
+        "Obsidian Sync is running, but \"Sync all other file types\" appears to be off. " +
+        "Without it, the z-author-sync/ folder won't sync. " +
+        "Enable it in Settings → Core plugins → Sync — on every device."
+      );
+    } else {
+      h.setText("2. Verify \"Sync all other file types\"");
+      p.setText(
+        "Obsidian Sync is running, but I can't detect whether \"Sync all other file types\" is on. " +
+        "For styling to sync across devices, make sure that setting is enabled in " +
+        "Settings → Core plugins → Sync."
+      );
+    }
+  }
+
+  private renderStyleCommandsSection(parent: HTMLElement) {
+    const section = parent.createDiv();
+
+    const h = section.createEl("h4");
+    h.setText("3. How to style text");
+    h.setAttr("style", "margin: 10px 0 6px 0;");
+
+    const p = section.createEl("p");
+    p.setAttr("style", "margin: 0 0 8px 0; font-size: 0.9em;");
+    p.setText(
+      "Three commands are available via the command palette (Cmd/Ctrl+P) or a hotkey you assign in Settings → Hotkeys:"
     );
+
+    const ul = section.createEl("ul");
+    ul.setAttr("style", "margin: 0; padding-left: 20px; font-size: 0.9em;");
+    const items: Array<[string, string]> = [
+      ["Paste as AI", "pastes clipboard contents marked as AI-authored."],
+      ["Mark selection as AI", "tags the currently selected text as AI."],
+      ["Remove AI styling", "clears AI styling from the selection (or the current note if nothing is selected)."],
+    ];
+    for (const [name, desc] of items) {
+      const li = ul.createEl("li");
+      li.setAttr("style", "margin-bottom: 4px;");
+      li.createEl("strong", { text: name });
+      li.appendText(` — ${desc}`);
+    }
   }
 
   private renderAboutPreview() {
@@ -1729,7 +1859,7 @@ class AuthorshipSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    this.renderSyncStatusBanner();
+    this.renderInstallationInstructions();
 
     containerEl.createEl("h3", { text: "Gradient colors" });
 
