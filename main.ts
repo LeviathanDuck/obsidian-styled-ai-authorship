@@ -929,140 +929,19 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       })
     );
 
-    // Reading-mode post-processor: if enabled, wraps AI-tagged source ranges
-    // within each rendered section in a gradient-styled span. Best-effort
-    // text matching; markdown syntax stripped in rendered HTML means not
-    // every range produces a perfect highlight, but prose will look right.
-    this.registerMarkdownPostProcessor((el, ctx) => {
-      if (!this.settings.showInReadingMode) return;
-      const sourcePath = ctx.sourcePath;
-      if (!sourcePath) return;
-      const ranges = this.lastPersisted.get(sourcePath);
-
-      if (this.settings.debug) {
-        console.group("AiStyled reader: postProcess");
-        console.log("sourcePath:", sourcePath);
-        console.log("ranges known for this path:", ranges);
-        console.log("element tag:", el.tagName, "textContent (first 80):", (el.textContent ?? "").slice(0, 80));
-      }
-
-      if (!ranges || ranges.length === 0) {
-        // Fallback: lastPersisted might not be populated yet (race with
-        // hydration). Try reading the sidecar directly.
-        const file = this.app.vault.getAbstractFileByPath(sourcePath);
-        if (file instanceof TFile) {
-          const sidecarPath = encodeSidecarPath(sourcePath);
-          void readSidecar(this.app.vault.adapter, sidecarPath).then(
-            sidecarRanges => {
-              if (sidecarRanges.length > 0) {
-                this.lastPersisted.set(sourcePath, sidecarRanges);
-                if (this.settings.showInReadingMode) {
-                  this.refreshAllReadingViews();
-                }
-              }
-            }
-          );
-        }
-        if (this.settings.debug) {
-          console.log("no ranges in lastPersisted → async sidecar read queued");
-          console.groupEnd();
-        }
-        return;
-      }
-
-      const section = ctx.getSectionInfo(el);
-      if (!section) {
-        if (this.settings.debug) {
-          console.log("getSectionInfo returned null → skip");
-          console.groupEnd();
-        }
-        return;
-      }
-
-      if (this.settings.debug) {
-        console.log("section:", { lineStart: section.lineStart, lineEnd: section.lineEnd });
-      }
-
-      const file = this.app.vault.getAbstractFileByPath(sourcePath);
-      if (!(file instanceof TFile)) {
-        if (this.settings.debug) {
-          console.log("file not found or not TFile → skip");
-          console.groupEnd();
-        }
-        return;
-      }
-
-      void this.applyReadingModeHighlight(el, file, section, ranges);
-
-      if (this.settings.debug) {
-        console.groupEnd();
-      }
-    });
+    // Reading-mode post-processor: DISABLED for now. The gradient treatment
+    // in Obsidian's reading-mode renderer requires deeper understanding of
+    // how post-processors interact with the DOM. Multiple approaches were
+    // attempted (inline styles, CSS classes, background-clip: text) and all
+    // caused layout artifacts. Deferred until we can properly research the
+    // rendering pipeline. The setting toggle remains in the UI but does
+    // nothing when enabled.
+    //
+    // TODO: revisit reading-mode support in a future release.
 
     console.log(
       `AiStyled-Authorship: loaded (${Platform.isMobile ? "mobile" : "desktop"})`
     );
-  }
-
-  private async applyReadingModeHighlight(
-    el: HTMLElement,
-    file: TFile,
-    section: { lineStart: number; lineEnd: number; text: string },
-    ranges: AIRange[]
-  ) {
-    try {
-      const source = await this.app.vault.cachedRead(file);
-      const lines = source.split("\n");
-
-      // Compute the absolute character range of this rendered section.
-      let sectionStartOffset = 0;
-      for (let i = 0; i < section.lineStart && i < lines.length; i++) {
-        sectionStartOffset += lines[i].length + 1;
-      }
-      let sectionEndOffset = sectionStartOffset;
-      for (let i = section.lineStart; i <= section.lineEnd && i < lines.length; i++) {
-        sectionEndOffset += lines[i].length;
-        if (i < section.lineEnd) sectionEndOffset += 1;
-      }
-
-      // Does any AI range intersect this section?
-      let intersects = false;
-      for (const r of ranges) {
-        if (r.to > sectionStartOffset && r.from < sectionEndOffset) {
-          intersects = true;
-          break;
-        }
-      }
-
-      if (this.settings.debug) {
-        console.log("section char range:", {
-          sectionStartOffset,
-          sectionEndOffset,
-          intersects,
-          rangeCount: ranges.length,
-        });
-      }
-
-      if (!intersects) return;
-
-      // Add a class — all styling handled in CSS via custom properties.
-      // No inline styles that could break Obsidian's reading-mode layout.
-      el.classList.add("leftcoast-ai-reading-section");
-    } catch (err) {
-      console.warn("AiStyled-Authorship: reading-mode highlight failed", err);
-    }
-  }
-
-  private refreshAllReadingViews() {
-    this.app.workspace.iterateAllLeaves(leaf => {
-      const view = leaf.view;
-      if (view instanceof MarkdownView) {
-        // @ts-ignore previewMode has a rerender method in practice
-        if (view.previewMode && typeof (view.previewMode as any).rerender === "function") {
-          (view.previewMode as any).rerender(true);
-        }
-      }
-    });
   }
 
   private async runPasteWithAI(editor: Editor) {
@@ -1355,31 +1234,12 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     await this.saveData(this.settings);
     this.applyStylingToggle();
     this.refreshAllEditors();
-    if (this.settings.showInReadingMode) {
-      this.refreshAllReadingViews();
-    }
   }
 
   applyStylingToggle() {
     document.body.classList.toggle(
       "leftcoast-ai-disabled",
       !this.settings.showAIStyling
-    );
-    this.applyReadingModeGradientVars();
-  }
-
-  applyReadingModeGradientVars() {
-    const stops = stopsFromHex(this.settings.gradientStops);
-    const N = 10;
-    const parts: string[] = [];
-    for (let i = 0; i <= N; i++) {
-      const xFrac = i / N;
-      const d = clamp(Math.abs(xFrac - 0.5) / 0.5, 0, 1);
-      parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(1)}%`);
-    }
-    document.body.style.setProperty(
-      "--ai-reading-gradient",
-      `linear-gradient(90deg, ${parts.join(", ")})`
     );
   }
 
@@ -1639,15 +1499,13 @@ class AuthorshipSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Show in reading mode")
       .setDesc(
-        "Apply the gradient to AI-tagged text in reading mode (preview). Best-effort — Markdown syntax is stripped in reading mode, so some ranges may not highlight perfectly."
+        "Not yet available. Reading-mode gradient support is planned for a future release."
       )
+      .setDisabled(true)
       .addToggle(toggle =>
         toggle
-          .setValue(this.plugin.settings.showInReadingMode)
-          .onChange(async value => {
-            this.plugin.settings.showInReadingMode = value;
-            await this.plugin.saveSettings();
-          })
+          .setValue(false)
+          .setDisabled(true)
       );
 
     new Setting(containerEl)
