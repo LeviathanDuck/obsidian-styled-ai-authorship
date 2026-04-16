@@ -1207,32 +1207,35 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       return;
     }
 
-    const current = view.state.field(aiRangeField, false) ?? [];
-    if (current.length > 0) {
-      // Editor already has ranges for this session. Mark hydrated so writes
-      // are allowed to persist future edits.
-      this.hydrated.add(file.path);
-      return;
-    }
-
     const ranges = await readSidecar(
       this.app.vault.adapter,
       encodeSidecarPath(file.path)
     );
 
     if (ranges.length === 0) {
-      // No sidecar (or empty). Mark hydrated — nothing to restore, but now
-      // writes are allowed if the user adds ranges later.
+      // No sidecar. Mark hydrated — writes are allowed if the user adds
+      // ranges later.
       this.hydrated.add(file.path);
       return;
     }
 
-    // Dispatch out-of-band so we don't run during a host update cycle.
+    const current = view.state.field(aiRangeField, false) ?? [];
+    // Union: keep whatever the editor already has AND add the sidecar's
+    // ranges. Handles multi-device case where the local state might have
+    // been populated by earlier sync events or a previous session.
+    const merged = normalizeRanges([...current, ...ranges]);
+
+    if (sameRanges(current, merged)) {
+      this.lastPersisted.set(file.path, merged);
+      this.hydrated.add(file.path);
+      return;
+    }
+
     queueMicrotask(() => {
       const liveView = this.findEditorView(file);
       if (!liveView) return;
-      liveView.dispatch({ effects: replaceAIRanges.of(ranges) });
-      this.lastPersisted.set(file.path, ranges);
+      liveView.dispatch({ effects: replaceAIRanges.of(merged) });
+      this.lastPersisted.set(file.path, merged);
       this.hydrated.add(file.path);
     });
   }
