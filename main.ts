@@ -1397,6 +1397,98 @@ class AuthorshipSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  private detectSyncConfig(): {
+    syncEnabled: boolean;
+    otherTypesEnabled: boolean | null; // null = couldn't detect
+  } {
+    try {
+      // @ts-ignore — internal Obsidian API
+      const syncPlugin = this.plugin.app.internalPlugins?.getPluginById?.("sync");
+      if (!syncPlugin?.enabled) {
+        return { syncEnabled: false, otherTypesEnabled: null };
+      }
+      // @ts-ignore
+      const instance = syncPlugin.instance;
+      // Obsidian Sync config has multiple shape variants; try known paths.
+      const candidates = [
+        instance?.pluginsMode,       // legacy
+        instance?.syncOptions,       // newer
+        instance?.config,            // another shape
+      ];
+      // Common property names across Obsidian versions for "Sync all other types"
+      const knownKeys = ["syncBinaries", "syncOtherFiles", "binaries", "other", "otherTypes"];
+      for (const obj of candidates) {
+        if (obj && typeof obj === "object") {
+          for (const key of knownKeys) {
+            if (key in obj) {
+              return { syncEnabled: true, otherTypesEnabled: !!obj[key] };
+            }
+          }
+        }
+      }
+      // Couldn't find the specific setting — sync is on but we can't tell
+      return { syncEnabled: true, otherTypesEnabled: null };
+    } catch {
+      return { syncEnabled: false, otherTypesEnabled: null };
+    }
+  }
+
+  private renderSyncStatusBanner() {
+    const { containerEl } = this;
+    const { syncEnabled, otherTypesEnabled } = this.detectSyncConfig();
+
+    // Only show the banner when something might need attention.
+    // Case 1: sync enabled AND we confirmed "other types" is off → red warning
+    // Case 2: sync enabled AND we couldn't detect → soft reminder
+    // Case 3: sync disabled → info only if using Obsidian Sync
+    // Case 4: "other types" is on → no banner (happy path)
+    if (syncEnabled && otherTypesEnabled === true) return;
+
+    const banner = containerEl.createDiv();
+    const isError = syncEnabled && otherTypesEnabled === false;
+    banner.setAttr(
+      "style",
+      `border-left: 4px solid ${isError ? "#E57373" : "#F0B84A"}; ` +
+        "background: var(--background-secondary); " +
+        "padding: 10px 14px; margin-bottom: 16px; border-radius: 4px;"
+    );
+    const title = banner.createEl("div", {
+      text: isError
+        ? "⚠️ Sync setting required for multi-device styling"
+        : "ℹ️ Check your sync settings for multi-device styling",
+    });
+    title.setAttr("style", "font-weight: 600; margin-bottom: 6px;");
+
+    const body = banner.createEl("p");
+    body.setAttr("style", "margin: 0 0 6px 0; font-size: 0.9em;");
+    if (isError) {
+      body.appendText(
+        "Obsidian Sync is running, but \"Sync all other file types\" appears to be off. " +
+        "AI styling is stored as JSON in the authorship/ folder. Without this setting, " +
+        "sidecar files won't sync across devices and styling won't appear on your other devices."
+      );
+    } else if (syncEnabled) {
+      body.appendText(
+        "Obsidian Sync is running, but I can't detect whether \"Sync all other file types\" is enabled. " +
+        "For AI styling to sync across devices, make sure that setting is on. The plugin stores " +
+        "styling as JSON files in the authorship/ folder at your vault root."
+      );
+    } else {
+      body.appendText(
+        "If you use Obsidian Sync (or iCloud Drive / Dropbox / other vault sync), " +
+        "styling syncs via JSON files in the authorship/ folder. For Obsidian Sync specifically, " +
+        "you must enable \"Sync all other file types\" in Settings → Sync."
+      );
+    }
+
+    const fix = banner.createEl("p");
+    fix.setAttr("style", "margin: 0; font-size: 0.85em; color: var(--text-muted);");
+    fix.appendText(
+      "Fix: Settings → Core plugins → Sync → enable \"Sync all other file types\". " +
+      "Do this on every device."
+    );
+  }
+
   private renderAboutPreview() {
     if (!this.aboutPreviewEl) return;
     this.aboutPreviewEl.empty();
@@ -1468,6 +1560,8 @@ class AuthorshipSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+
+    this.renderSyncStatusBanner();
 
     containerEl.createEl("h3", { text: "Gradient colors" });
 
