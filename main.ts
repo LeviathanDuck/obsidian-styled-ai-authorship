@@ -250,12 +250,14 @@ async function writeSidecar(
 ): Promise<void> {
   try {
     if (ranges.length === 0) {
+      console.warn("[AiStyled WRITE] ranges empty → deleting sidecar if exists:", sidecarPath);
       if (await adapter.exists(sidecarPath)) {
         await adapter.remove(sidecarPath);
       }
       return;
     }
     if (!(await adapter.exists(SIDECAR_FOLDER))) {
+      console.warn("[AiStyled WRITE] creating .authorship/ folder");
       await adapter.mkdir(SIDECAR_FOLDER);
     }
     const data: SidecarData = {
@@ -263,9 +265,12 @@ async function writeSidecar(
       file: notePath,
       ranges: ranges.map(r => ({ from: r.from, to: r.to, author: "ai" as const })),
     };
-    await adapter.write(sidecarPath, JSON.stringify(data, null, 2));
+    const json = JSON.stringify(data, null, 2);
+    console.warn("[AiStyled WRITE] writing", sidecarPath, "→", json.length, "bytes,", ranges.length, "ranges");
+    await adapter.write(sidecarPath, json);
+    console.warn("[AiStyled WRITE] ✓ write succeeded:", sidecarPath);
   } catch (err) {
-    console.warn(`AiStyled-Authorship: failed to write sidecar ${sidecarPath}`, err);
+    console.warn("[AiStyled WRITE] ✗ write FAILED:", sidecarPath, err);
   }
 }
 
@@ -1121,9 +1126,16 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
   }
 
   private async hydrateFile(file: TFile, attempt = 0) {
-    if (this.hydrated.has(file.path)) return;
-    // If a write is already pending, in-memory state is authoritative.
-    if (this.writeTimers.has(file.path)) return;
+    console.warn("[AiStyled HYDRATE] hydrateFile:", file.path, "attempt:", attempt);
+    // Don't block on `hydrated` — that set gates WRITES only (in
+    // onRangesMaybeChanged). We always attempt to load from the sidecar
+    // when the editor's field is empty, even if we've hydrated before,
+    // because CM6 creates a fresh empty state when the user switches
+    // away and back.
+    if (this.writeTimers.has(file.path)) {
+      console.warn("[AiStyled HYDRATE] → write pending, skipping");
+      return;
+    }
 
     const view = this.findEditorView(file);
     if (!view) {
@@ -1190,22 +1202,30 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
   private onRangesMaybeChanged(view: EditorView) {
     const path = this.pathForEditorView(view);
-    if (!path) return;
+    console.warn("[AiStyled PERSIST] onRangesMaybeChanged: path =", path);
+    if (!path) {
+      console.warn("[AiStyled PERSIST] → pathForEditorView returned null, bailing");
+      return;
+    }
     const ranges = view.state.field(aiRangeField, false) ?? [];
     const normalized = normalizeRanges(ranges);
+    console.warn("[AiStyled PERSIST] → ranges count:", normalized.length, "hydrated:", this.hydrated.has(path));
 
-    // Block empty writes before hydration — otherwise the first update
-    // after startup (field=[]) would overwrite a valid sidecar with empty
-    // ranges, wiping AI data. Non-empty writes are allowed pre-hydration
-    // because they're strictly additive user intent (Paste with AI Style,
-    // Mark Selection, etc.) and flipping the file to hydrated here is safe.
     if (!this.hydrated.has(path)) {
-      if (normalized.length === 0) return;
+      if (normalized.length === 0) {
+        console.warn("[AiStyled PERSIST] → blocked: empty ranges pre-hydration");
+        return;
+      }
+      console.warn("[AiStyled PERSIST] → marking hydrated (non-empty pre-hydration write)");
       this.hydrated.add(path);
     }
 
     const last = this.lastPersisted.get(path);
-    if (last && sameRanges(last, normalized)) return;
+    if (last && sameRanges(last, normalized)) {
+      console.warn("[AiStyled PERSIST] → skipped: same as lastPersisted");
+      return;
+    }
+    console.warn("[AiStyled PERSIST] → scheduling sidecar write for", path, "with", normalized.length, "ranges");
     this.scheduleSidecarWrite(path, normalized);
   }
 
@@ -1214,6 +1234,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     if (existing !== undefined) window.clearTimeout(existing);
     const timerId = window.setTimeout(() => {
       this.writeTimers.delete(notePath);
+      console.warn("[AiStyled PERSIST] debounce fired for", notePath, "→ flushing", ranges.length, "ranges");
       void this.flushSidecar(notePath, ranges);
     }, WRITE_DEBOUNCE_MS);
     this.writeTimers.set(notePath, timerId);
@@ -1221,7 +1242,9 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
   private async flushSidecar(notePath: string, ranges: AIRange[]) {
     const sidecarPath = encodeSidecarPath(notePath);
+    console.warn("[AiStyled PERSIST] flushSidecar:", sidecarPath, "ranges:", ranges.length);
     await writeSidecar(this.app.vault.adapter, sidecarPath, notePath, ranges);
+    console.warn("[AiStyled PERSIST] writeSidecar completed for", sidecarPath);
     this.lastPersisted.set(notePath, ranges);
   }
 

@@ -9,11 +9,20 @@
    color via !important color: inherit, so theme rules that set color
    or -webkit-text-fill-color on nested elements can't break through. */
 
-.leftcoast-ai-chunk * {
+.leftcoast-ai-chunk *:not(.cm-selectionBackground) {
   color: inherit !important;
   -webkit-text-fill-color: inherit !important;
   background: transparent !important;
   text-decoration-color: inherit !important;
+}
+
+/* Seamless text selection across chunk spans. Without this, each 5-char
+   chunk renders its own ::selection box with micro-gaps between spans. */
+.leftcoast-ai-chunk::selection,
+.leftcoast-ai-chunk *::selection {
+  background-color: var(--text-selection) !important;
+  -webkit-text-fill-color: var(--text-normal) !important;
+  color: var(--text-normal) !important;
 }
 
 /* When the user disables "Show AI authorship styling", the body class is
