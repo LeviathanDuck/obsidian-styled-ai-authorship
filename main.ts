@@ -920,6 +920,33 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       })
     );
 
+    // Sidecar arrived via sync — re-hydrate the corresponding note if it's
+    // currently open. Covers the case where the note opens before the
+    // sidecar has finished downloading from Obsidian Sync.
+    const onSidecarTouched = (filePath: string) => {
+      if (!filePath.startsWith(SIDECAR_FOLDER + "/")) return;
+      const filename = filePath.slice(SIDECAR_FOLDER.length + 1);
+      // Decode: strip trailing .json, replace __ with /
+      const encoded = filename.endsWith(".json") ? filename.slice(0, -5) : filename;
+      const notePath = encoded.replace(/__/g, "/");
+      const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+      if (!(noteFile instanceof TFile)) return;
+      // Clear hydrated/lastPersisted so hydration re-runs from the new sidecar
+      this.hydrated.delete(notePath);
+      this.lastPersisted.delete(notePath);
+      void this.hydrateFile(noteFile);
+    };
+    this.registerEvent(
+      this.app.vault.on("create", file => {
+        if (file instanceof TFile) onSidecarTouched(file.path);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", file => {
+        if (file instanceof TFile) onSidecarTouched(file.path);
+      })
+    );
+
     // Delete hook — drop the sidecar
     this.registerEvent(
       this.app.vault.on("delete", file => {
