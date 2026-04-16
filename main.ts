@@ -250,10 +250,7 @@ async function writeSidecar(
 ): Promise<void> {
   try {
     if (ranges.length === 0) {
-      console.warn("[AiStyled WRITE] ranges empty → deleting sidecar if exists:", sidecarPath);
-      if (await adapter.exists(sidecarPath)) {
-        await adapter.remove(sidecarPath);
-      }
+      console.warn("[AiStyled WRITE] ranges empty → skipping (never write empty)");
       return;
     }
     if (!(await adapter.exists(SIDECAR_FOLDER))) {
@@ -1211,12 +1208,17 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     const normalized = normalizeRanges(ranges);
     console.warn("[AiStyled PERSIST] → ranges count:", normalized.length, "hydrated:", this.hydrated.has(path));
 
+    // Never write empty ranges. An empty field is usually a transient state
+    // (editor just created, hydration pending). Writing [] would delete the
+    // sidecar and race with hydration. Sidecars are only deleted when the
+    // NOTE is deleted (vault delete hook), not when the field is empty.
+    if (normalized.length === 0) {
+      console.warn("[AiStyled PERSIST] → skipped: empty ranges (never write empty)");
+      return;
+    }
+
     if (!this.hydrated.has(path)) {
-      if (normalized.length === 0) {
-        console.warn("[AiStyled PERSIST] → blocked: empty ranges pre-hydration");
-        return;
-      }
-      console.warn("[AiStyled PERSIST] → marking hydrated (non-empty pre-hydration write)");
+      console.warn("[AiStyled PERSIST] → marking hydrated (non-empty write)");
       this.hydrated.add(path);
     }
 
