@@ -72,6 +72,7 @@ interface AuthorshipSettings {
   gradientStops: string[];
   orientation: GradientOrientation;
   waviness: number; // 0.0 = flat, 1.0 = default, 2.0 = strong
+  showInReadingMode: boolean;
 }
 
 const DEFAULT_SETTINGS: AuthorshipSettings = {
@@ -88,6 +89,7 @@ const DEFAULT_SETTINGS: AuthorshipSettings = {
   ],
   orientation: "vertical",
   waviness: 1.0,
+  showInReadingMode: false,
 };
 
 // ---- state effects & field ----
@@ -361,6 +363,65 @@ function buildLineDecoration(color: string): Decoration {
   });
 }
 
+function buildGradientLineDeco(gradientCss: string): Decoration {
+  // One decoration per visual line. Parent span gets a CSS gradient clipped
+  // to the text; transparent fill reveals the clipped gradient. Children
+  // (bold, italic, links, code) inherit transparent via styles.css.
+  return Decoration.mark({
+    class: "leftcoast-ai-chunk",
+    attributes: {
+      style:
+        `background: ${gradientCss} !important; ` +
+        "background-clip: text !important; " +
+        "-webkit-background-clip: text !important; " +
+        "color: transparent !important; " +
+        "-webkit-text-fill-color: transparent !important;",
+    },
+  });
+}
+
+function buildLineGradient(
+  stops: Stop[],
+  orientation: GradientOrientation,
+  amp: number,
+  field: GradientField,
+  block: { from: number; to: number; top: number; bottom: number; height: number }
+): string {
+  const N = 20; // sample density
+  const parts: string[] = [];
+
+  if (orientation === "vertical") {
+    // River: each line sweeps pink-blue-pink horizontally.
+    // Wave drifts the blue center line-by-line (vertical ribbon meander).
+    const phase = ((block.top - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
+    const centerPx = field.baseCenterX + Math.sin(phase) * amp;
+    const widthPx = Math.max(field.fieldSpan, 1);
+    const centerFrac = clamp((centerPx - field.fieldLeft) / widthPx, 0, 1);
+    const radiusFrac = 0.5;
+
+    for (let i = 0; i <= N; i++) {
+      const xFrac = i / N;
+      const d = clamp(Math.abs(xFrac - centerFrac) / radiusFrac, 0, 1);
+      parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(2)}%`);
+    }
+  } else {
+    // Sunset: each line samples colors along x based on vertical distance
+    // from a centerY that drifts with x.
+    const rowY = block.top + block.height / 2;
+    const vRadius = Math.max(field.verticalRadius, 1);
+    for (let i = 0; i <= N; i++) {
+      const xFrac = i / N;
+      const xPx = field.fieldLeft + xFrac * field.fieldSpan;
+      const phase = ((xPx - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
+      const centerY = field.baseCenterY + Math.sin(phase) * amp;
+      const d = clamp(Math.abs(rowY - centerY) / vRadius, 0, 1);
+      parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(2)}%`);
+    }
+  }
+
+  return `linear-gradient(90deg, ${parts.join(", ")})`;
+}
+
 function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number): GradientField {
   // Use contentDOM (the actual text area) as the field, not scrollDOM (the
   // full editor including gutters and padding). This makes the blue center
@@ -387,7 +448,7 @@ function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number
     fieldSpan: fieldWidth,
     contentLeft: fieldLeft,
     charWidth,
-    waveAmplitude: clamp(fieldWidth * 0.02, 8, 18),
+    waveAmplitude: clamp(fieldWidth * 0.05, 15, 60),
     wavePeriod: Math.max(topBlock.height, 24) * 8,
   };
 }
@@ -575,32 +636,12 @@ function createHighlightPlugin(
               const segTo = Math.min(block.to, slice.to);
 
               if (segTo > segFrom) {
-                const rowY = block.top + block.height / 2;
-
-                if (orientation === "vertical") {
-                  // Vertical ribbon: runs top-to-bottom, drifts left/right.
-                  const phase = ((block.top - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
-                  const centerX = field.baseCenterX + Math.sin(phase) * amp;
-                  for (let pos = segFrom; pos < segTo; pos++) {
-                    const chunkEnd = pos + 1;
-                    // Real char position: content left + (char index within line) * charWidth.
-                    // Gives each char its actual-ish on-screen x, so short lines stay short
-                    // instead of being stretched across the full field width.
-                    const x = field.contentLeft + (pos - block.from) * field.charWidth;
-                    const d = clamp(Math.abs(x - centerX) / field.horizontalRadius, 0, 1);
-                    builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
-                  }
-                } else {
-                  // Horizontal ribbon ("river"): runs left-to-right, drifts up/down.
-                  for (let pos = segFrom; pos < segTo; pos++) {
-                    const chunkEnd = pos + 1;
-                    const x = field.contentLeft + (pos - block.from) * field.charWidth;
-                    const phase = ((x - field.contentLeft) / field.wavePeriod) * Math.PI * 2;
-                    const centerY = field.baseCenterY + Math.sin(phase) * amp;
-                    const d = clamp(Math.abs(rowY - centerY) / field.verticalRadius, 0, 1);
-                    builder.add(pos, chunkEnd, buildLineDecoration(colorAt(stops, d)));
-                  }
-                }
+                // Build a CSS linear-gradient covering this visual line segment.
+                // The browser renders the gradient across the line's actual
+                // rendered width, handling proportional character widths
+                // naturally — no more math-estimated character positions.
+                const gradient = buildLineGradient(stops, orientation, amp, field, block);
+                builder.add(segFrom, segTo, buildGradientLineDeco(gradient));
               }
 
               if (block.to >= slice.to) break;
@@ -760,9 +801,93 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       })
     );
 
+    // Reading-mode post-processor: if enabled, wraps AI-tagged source ranges
+    // within each rendered section in a gradient-styled span. Best-effort
+    // text matching; markdown syntax stripped in rendered HTML means not
+    // every range produces a perfect highlight, but prose will look right.
+    this.registerMarkdownPostProcessor((el, ctx) => {
+      if (!this.settings.showInReadingMode) return;
+      const sourcePath = ctx.sourcePath;
+      if (!sourcePath) return;
+      const ranges = this.lastPersisted.get(sourcePath);
+      if (!ranges || ranges.length === 0) return;
+
+      const section = ctx.getSectionInfo(el);
+      if (!section) return;
+
+      const file = this.app.vault.getAbstractFileByPath(sourcePath);
+      if (!(file instanceof TFile)) return;
+
+      void this.applyReadingModeHighlight(el, file, section, ranges);
+    });
+
     console.log(
       `AiStyled-Authorship: loaded (${Platform.isMobile ? "mobile" : "desktop"})`
     );
+  }
+
+  private async applyReadingModeHighlight(
+    el: HTMLElement,
+    file: TFile,
+    section: { lineStart: number; lineEnd: number; text: string },
+    ranges: AIRange[]
+  ) {
+    try {
+      const source = await this.app.vault.cachedRead(file);
+      const lines = source.split("\n");
+      let sectionStartOffset = 0;
+      for (let i = 0; i < section.lineStart; i++) {
+        sectionStartOffset += lines[i].length + 1;
+      }
+      let sectionEndOffset = sectionStartOffset;
+      for (let i = section.lineStart; i <= section.lineEnd && i < lines.length; i++) {
+        sectionEndOffset += lines[i].length + (i < section.lineEnd ? 1 : 0);
+      }
+
+      const aiInSection: { from: number; to: number }[] = [];
+      for (const r of ranges) {
+        const from = Math.max(r.from, sectionStartOffset);
+        const to = Math.min(r.to, sectionEndOffset);
+        if (to > from) aiInSection.push({ from, to });
+      }
+      if (aiInSection.length === 0) return;
+
+      // Coarse reading-mode highlight: apply a simple CSS gradient to each
+      // block-level element in this section that contains AI text. Not
+      // per-character — reading mode renders Markdown so source offsets
+      // don't map cleanly to DOM positions.
+      const stops = stopsFromHex(this.settings.gradientStops);
+      const colorStops: string[] = [];
+      const N = 10;
+      for (let i = 0; i <= N; i++) {
+        const xFrac = i / N;
+        const d = clamp(Math.abs(xFrac - 0.5) / 0.5, 0, 1);
+        colorStops.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(1)}%`);
+      }
+      const gradient = `linear-gradient(90deg, ${colorStops.join(", ")})`;
+
+      const blockElements = el.querySelectorAll("p, li, h1, h2, h3, h4, h5, h6, blockquote");
+      blockElements.forEach(block => {
+        const blockText = (block.textContent ?? "").trim();
+        if (blockText.length === 0) return;
+        // If any AI range text substring appears in this block, style it.
+        for (const r of aiInSection) {
+          const aiText = source.slice(r.from, r.to).trim();
+          if (aiText.length === 0) continue;
+          if (blockText.includes(aiText.slice(0, Math.min(30, aiText.length)))) {
+            (block as HTMLElement).style.cssText +=
+              `background: ${gradient} !important; ` +
+              "background-clip: text !important; " +
+              "-webkit-background-clip: text !important; " +
+              "color: transparent !important; " +
+              "-webkit-text-fill-color: transparent !important;";
+            break;
+          }
+        }
+      });
+    } catch (err) {
+      console.warn("AiStyled-Authorship: reading-mode highlight failed", err);
+    }
   }
 
   private async runPasteWithAI(editor: Editor) {
@@ -1181,6 +1306,20 @@ class AuthorshipSettingTab extends PluginSettingTab {
     paletteHint.appendText(
       "These toggles only affect the right-click menu. All three actions remain available from the command palette and via hotkeys you've assigned."
     );
+
+    new Setting(containerEl)
+      .setName("Show in reading mode")
+      .setDesc(
+        "Apply the gradient to AI-tagged text in reading mode (preview). Best-effort — Markdown syntax is stripped in reading mode, so some ranges may not highlight perfectly."
+      )
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.showInReadingMode)
+          .onChange(async value => {
+            this.plugin.settings.showInReadingMode = value;
+            await this.plugin.saveSettings();
+          })
+      );
 
     new Setting(containerEl)
       .setName("Show AI authorship styling")
