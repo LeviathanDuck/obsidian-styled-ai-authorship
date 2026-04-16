@@ -630,12 +630,20 @@ function createHighlightPlugin(
           tr.effects.some(e => e.is(refreshDecorationsEffect))
         );
 
+        // If the only signal is our own refresh-dispatch (no doc, viewport,
+        // or range changes), skip re-scheduling. this.decorations was set
+        // in the measure-write phase; the dispatch's purpose was just to
+        // trigger a paint. Re-scheduling here would loop.
         if (
-          update.docChanged ||
-          update.viewportChanged ||
-          rangesChanged ||
-          refreshRequested
+          refreshRequested &&
+          !update.docChanged &&
+          !update.viewportChanged &&
+          !rangesChanged
         ) {
+          return;
+        }
+
+        if (update.docChanged || update.viewportChanged || rangesChanged) {
           this.schedule(update.view);
         }
 
@@ -656,23 +664,35 @@ function createHighlightPlugin(
             return this.buildWithMeasurements(v);
           },
           write: (decos, v) => {
-            if (decos) {
-              this.decorations = decos;
-              // Trigger a re-render so CM6 picks up the new decorations.
+            if (!decos) return;
+            this.decorations = decos;
+            // Dispatching during measure is forbidden. Defer out of the
+            // current update cycle.
+            window.setTimeout(() => {
+              if (!v.dom.isConnected) return;
               v.dispatch({ effects: refreshDecorationsEffect.of(null) });
-            }
+            }, 0);
           },
         });
       }
 
+      // Per-character coloring with REAL pixel positions from coordsAtPos.
+      // This matches the Settings preview's approach exactly. Handles wrapped
+      // lines correctly because each character knows its own (x, y), not
+      // derived from a per-document-line approximation.
       buildWithMeasurements(view: EditorView): DecorationSet | null {
         const builder = new RangeSetBuilder<Decoration>();
         const ranges = view.state.field(aiRangeField, false) ?? [];
         if (ranges.length === 0) return Decoration.none;
         const docLength = view.state.doc.length;
         const { stops, orientation, waviness } = getConfig();
+        const debug = plugin.settings.debug;
+        if (debug) {
+          console.group("AiStyled: buildWithMeasurements");
+        }
 
-        for (const range of ranges) {
+        for (let ri = 0; ri < ranges.length; ri++) {
+          const range = ranges[ri];
           const from = Math.max(0, range.from);
           const to = Math.min(docLength, range.to);
           if (to <= from) continue;
@@ -680,50 +700,57 @@ function createHighlightPlugin(
           const field = buildGradientField(view, from, to);
           const amp = field.waveAmplitude * waviness;
 
+          if (debug) {
+            console.log(`range ${ri}: [${from}..${to}]`, {
+              baseCenterX: field.baseCenterX,
+              baseCenterY: field.baseCenterY,
+              horizontalRadius: field.horizontalRadius,
+              verticalRadius: field.verticalRadius,
+              rangeTop: field.rangeTop,
+              rangeBottom: field.rangeBottom,
+              amp,
+            });
+          }
+
           for (const slice of buildVisibleSlices(view, { from, to })) {
-            let cursor = slice.from;
-            while (cursor <= slice.to && cursor <= docLength) {
-              const block = view.lineBlockAt(cursor);
-              const segFrom = Math.max(block.from, slice.from);
-              const segTo = Math.min(block.to, slice.to);
+            const debugSamples: Array<{ pos: number; x: number; y: number; d: number }> = [];
+            for (let pos = slice.from; pos < slice.to; pos++) {
+              let coords: { left: number; right: number; top: number; bottom: number } | null = null;
+              try {
+                coords = view.coordsAtPos(pos, 1);
+              } catch {
+                continue;
+              }
+              if (!coords) continue;
 
-              if (segTo > segFrom) {
-                // Measure real pixel bounds of this mark via coordsAtPos.
-                // Works in the measure-read phase.
-                let markLeftPx: number | null = null;
-                let markRightPx: number | null = null;
-                try {
-                  const sc = view.coordsAtPos(segFrom, 1);
-                  const ec = view.coordsAtPos(segTo, -1);
-                  if (sc && ec) {
-                    markLeftPx = sc.left;
-                    markRightPx = ec.right;
-                  }
-                } catch {
-                  // fall through to approximation
-                }
+              const x = (coords.left + coords.right) / 2;
+              const y = (coords.top + coords.bottom) / 2;
 
-                if (markLeftPx == null || markRightPx == null) {
-                  // Approximation fallback when measurement unavailable.
-                  const startOffset = Math.max(0, segFrom - block.from);
-                  const count = Math.max(1, segTo - segFrom);
-                  markLeftPx = field.contentLeft + startOffset * field.charWidth;
-                  markRightPx = markLeftPx + count * field.charWidth;
-                }
-
-                const gradient = buildLineGradient(
-                  stops, orientation, amp, field, block,
-                  markLeftPx, markRightPx
-                );
-                builder.add(segFrom, segTo, buildGradientLineDeco(gradient));
+              let d: number;
+              if (orientation === "vertical") {
+                const phase = ((y - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
+                const centerX = field.baseCenterX + Math.sin(phase) * amp;
+                d = clamp(Math.abs(x - centerX) / field.horizontalRadius, 0, 1);
+              } else {
+                const phase = ((x - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
+                const centerY = field.baseCenterY + Math.sin(phase) * amp;
+                d = clamp(Math.abs(y - centerY) / field.verticalRadius, 0, 1);
               }
 
-              if (block.to >= slice.to) break;
-              cursor = block.to + 1;
+              const color = colorAt(stops, d);
+              builder.add(pos, pos + 1, buildLineDecoration(color));
+
+              if (debug && debugSamples.length < 5) {
+                debugSamples.push({ pos, x, y, d });
+              }
+            }
+            if (debug) {
+              console.log(`slice [${slice.from}..${slice.to}] first 5 chars:`, debugSamples);
             }
           }
         }
 
+        if (debug) console.groupEnd();
         return builder.finish();
       }
     },
