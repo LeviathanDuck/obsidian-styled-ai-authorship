@@ -619,15 +619,13 @@ function createHighlightPlugin(
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet = Decoration.none;
-      private pending = false;
-      // Set to true right before we dispatch our post-measure refresh effect.
-      // That dispatch's update cycle should skip rescheduling (decorations
-      // are already up-to-date). External refresh effects (from settings
-      // changes) DON'T set this flag, so they DO trigger a rebuild.
-      private selfRefreshPending = false;
+      private rafPending = false;
+      // Set when we dispatch our own refresh. The resulting update should
+      // skip rescheduling (decorations are already up-to-date).
+      private justRefreshed = false;
 
       constructor(view: EditorView) {
-        this.schedule(view);
+        this.scheduleRAF(view);
       }
 
       update(update: ViewUpdate) {
@@ -639,14 +637,9 @@ function createHighlightPlugin(
           tr.effects.some(e => e.is(refreshDecorationsEffect))
         );
 
-        if (
-          refreshRequested &&
-          this.selfRefreshPending &&
-          !update.docChanged &&
-          !update.viewportChanged &&
-          !rangesChanged
-        ) {
-          this.selfRefreshPending = false;
+        // Skip if this update is purely our own post-build dispatch.
+        if (refreshRequested && this.justRefreshed) {
+          this.justRefreshed = false;
           return;
         }
 
@@ -656,7 +649,7 @@ function createHighlightPlugin(
           rangesChanged ||
           refreshRequested
         ) {
-          this.schedule(update.view);
+          this.scheduleRAF(update.view);
         }
 
         if (rangesChanged || update.docChanged) {
@@ -664,33 +657,25 @@ function createHighlightPlugin(
         }
       }
 
-      // Defer decoration computation to CM6's measure phase, where layout is
-      // stable and coordsAtPos works. During ViewPlugin.update, CM6 forbids
-      // layout reads; position math has to run here instead.
-      schedule(view: EditorView) {
-        if (this.pending) {
-          if (getConfig().debug) console.log("AiStyled: schedule skipped (pending)");
+      // Use requestAnimationFrame instead of CM6's requestMeasure.
+      // rAF fires after layout settles so coordsAtPos works safely.
+      // Dispatching from rAF is outside the update cycle so no errors.
+      scheduleRAF(view: EditorView) {
+        if (this.rafPending) {
+          if (getConfig().debug) console.log("AiStyled: scheduleRAF skipped (pending)");
           return;
         }
-        this.pending = true;
-        view.requestMeasure({
-          read: v => {
-            this.pending = false;
-            if (getConfig().debug) console.log("AiStyled: measure read firing");
-            return this.buildWithMeasurements(v);
-          },
-          write: (decos, v) => {
-            if (!decos) return;
+        this.rafPending = true;
+        requestAnimationFrame(() => {
+          this.rafPending = false;
+          if (!view.dom.isConnected) return;
+          if (getConfig().debug) console.log("AiStyled: rAF build firing");
+          const decos = this.buildWithMeasurements(view);
+          if (decos) {
             this.decorations = decos;
-            // Dispatching during measure is forbidden. Defer out of the
-            // current update cycle. Flag this as a self-refresh so the
-            // update handler doesn't reschedule another measure.
-            this.selfRefreshPending = true;
-            window.setTimeout(() => {
-              if (!v.dom.isConnected) return;
-              v.dispatch({ effects: refreshDecorationsEffect.of(null) });
-            }, 0);
-          },
+            this.justRefreshed = true;
+            view.dispatch({ effects: refreshDecorationsEffect.of(null) });
+          }
         });
       }
 
@@ -1575,7 +1560,7 @@ class AuthorshipSettingTab extends PluginSettingTab {
       )
       .addSlider(slider =>
         slider
-          .setLimits(0, 200, 5)
+          .setLimits(0, 600, 2)
           .setValue(Math.round(this.plugin.settings.waviness * 100))
           .setDynamicTooltip()
           .onChange(async value => {
