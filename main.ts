@@ -73,6 +73,7 @@ interface AuthorshipSettings {
   orientation: GradientOrientation;
   waviness: number; // 0.0 = flat, 1.0 = default, 2.0 = strong
   showInReadingMode: boolean;
+  debug: boolean;
 }
 
 const DEFAULT_SETTINGS: AuthorshipSettings = {
@@ -90,6 +91,7 @@ const DEFAULT_SETTINGS: AuthorshipSettings = {
   orientation: "vertical",
   waviness: 1.0,
   showInReadingMode: false,
+  debug: false,
 };
 
 // ---- state effects & field ----
@@ -426,14 +428,38 @@ function buildLineGradient(
 }
 
 function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number): GradientField {
-  // Use contentDOM (the actual text area) as the field, not scrollDOM (the
-  // full editor including gutters and padding). This makes the blue center
-  // align with where text actually renders, so character x positions derived
-  // from charIndex * charWidth reach d=1 at the real text edges.
+  // Measure the actual rendered width of a `.cm-line` element belonging to
+  // this range. Obsidian's readable-line-length means `.cm-content` is
+  // typically wider than the lines within it — using contentDOM here caused
+  // the ribbon center to sit past the right edge of typical-length lines.
+  //
+  // Falls back to contentDOM bounds if we can't find a line element.
   const contentRect = view.contentDOM.getBoundingClientRect();
   const charWidth = Math.max(view.defaultCharacterWidth, 4);
-  const fieldLeft = contentRect.left;
-  const fieldWidth = Math.max(contentRect.width, charWidth * 8);
+
+  let lineLeftPx = contentRect.left;
+  let lineRightPx = contentRect.right;
+
+  try {
+    const domPos = view.domAtPos(rangeFrom);
+    let el: Node | null = domPos.node;
+    // Walk up to find the .cm-line ancestor.
+    while (el && !(el instanceof HTMLElement && el.classList?.contains("cm-line"))) {
+      el = el.parentNode;
+    }
+    if (el instanceof HTMLElement) {
+      const lineRect = el.getBoundingClientRect();
+      if (lineRect.width > charWidth * 4) {
+        lineLeftPx = lineRect.left;
+        lineRightPx = lineRect.right;
+      }
+    }
+  } catch {
+    // Fall back to contentRect; leave lineLeftPx/lineRightPx as-is.
+  }
+
+  const fieldLeft = lineLeftPx;
+  const fieldWidth = Math.max(lineRightPx - lineLeftPx, charWidth * 8);
   const topBlock = view.lineBlockAt(rangeFrom);
   const bottomBlock = view.lineBlockAt(rangeTo);
   const rangeTop = topBlock.top;
@@ -761,6 +787,14 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "dump-debug-info",
+      name: "Dump debug info for current note",
+      editorCallback: (editor: Editor) => {
+        this.runDumpDebug(editor);
+      },
+    });
+
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, _view: MarkdownView) => {
         if (this.settings.showPasteMenuItem) {
@@ -979,6 +1013,108 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     cm.dispatch({
       effects: addAIRange.of({ from: sel.from, to: sel.to }),
     });
+  }
+
+  private runDumpDebug(editor: Editor) {
+    // @ts-ignore Obsidian exposes the CM6 EditorView via editor.cm
+    const cm: EditorView = (editor as any).cm;
+    if (!cm) {
+      new Notice("Could not access editor");
+      return;
+    }
+    const ranges = cm.state.field(aiRangeField, false) ?? [];
+    const doc = cm.state.doc;
+
+    console.group("=== Leftcoast Authorship: Debug Dump ===");
+    console.log("settings:", JSON.parse(JSON.stringify(this.settings)));
+    console.log("ranges:", ranges);
+    console.log("doc length:", doc.length);
+
+    const contentRect = cm.contentDOM.getBoundingClientRect();
+    const scrollRect = cm.scrollDOM.getBoundingClientRect();
+    console.log("contentDOM rect:", {
+      left: contentRect.left,
+      right: contentRect.right,
+      width: contentRect.width,
+    });
+    console.log("scrollDOM rect:", {
+      left: scrollRect.left,
+      right: scrollRect.right,
+      width: scrollRect.width,
+    });
+    console.log("defaultCharacterWidth:", cm.defaultCharacterWidth);
+
+    for (let ri = 0; ri < ranges.length; ri++) {
+      const r = ranges[ri];
+      console.group(`range ${ri}: [${r.from}..${r.to}]`);
+
+      // Measure the first line of this range.
+      try {
+        const domPos = cm.domAtPos(r.from);
+        let el: Node | null = domPos.node;
+        while (el && !(el instanceof HTMLElement && el.classList?.contains("cm-line"))) {
+          el = el.parentNode;
+        }
+        if (el instanceof HTMLElement) {
+          const lineRect = el.getBoundingClientRect();
+          console.log("first line .cm-line rect:", {
+            left: lineRect.left,
+            right: lineRect.right,
+            width: lineRect.width,
+          });
+        } else {
+          console.log("first line .cm-line rect: NOT FOUND");
+        }
+      } catch (err) {
+        console.log("domAtPos error:", err);
+      }
+
+      const field = buildGradientField(cm, r.from, r.to);
+      console.log("buildGradientField result:", {
+        baseCenterX: field.baseCenterX,
+        baseCenterY: field.baseCenterY,
+        fieldLeft: field.fieldLeft,
+        fieldSpan: field.fieldSpan,
+        horizontalRadius: field.horizontalRadius,
+        verticalRadius: field.verticalRadius,
+        rangeTop: field.rangeTop,
+        rangeBottom: field.rangeBottom,
+        waveAmplitude: field.waveAmplitude,
+        wavePeriod: field.wavePeriod,
+      });
+
+      // Walk the first 3 visual lines and show measured bounds.
+      let cursor = r.from;
+      let lineIdx = 0;
+      while (cursor < r.to && cursor <= doc.length && lineIdx < 3) {
+        const block = cm.lineBlockAt(cursor);
+        const segFrom = Math.max(block.from, r.from);
+        const segTo = Math.min(block.to, r.to);
+        if (segTo > segFrom) {
+          try {
+            const sc = cm.coordsAtPos(segFrom, 1);
+            const ec = cm.coordsAtPos(segTo, -1);
+            console.log(`line ${lineIdx} [${segFrom}..${segTo}]:`, {
+              blockTop: block.top,
+              blockHeight: block.height,
+              markLeftPx: sc?.left,
+              markRightPx: ec?.right,
+              spanWidth: sc && ec ? ec.right - sc.left : null,
+            });
+          } catch (err) {
+            console.log(`line ${lineIdx}: coordsAtPos error`, err);
+          }
+        }
+        if (block.to >= r.to) break;
+        cursor = block.to + 1;
+        lineIdx++;
+      }
+
+      console.groupEnd();
+    }
+
+    console.groupEnd();
+    new Notice("Debug info dumped to console (Cmd+Option+I to view)");
   }
 
   private runRemoveAI(editor: Editor) {
@@ -1407,6 +1543,20 @@ class AuthorshipSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.showInReadingMode)
           .onChange(async value => {
             this.plugin.settings.showInReadingMode = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Debug logging")
+      .setDesc(
+        "Log detailed rendering info to the developer console (Cmd+Option+I). Use the \"Dump debug info for current note\" command for a one-shot snapshot. Off for normal use."
+      )
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.debug)
+          .onChange(async value => {
+            this.plugin.settings.debug = value;
             await this.plugin.saveSettings();
           })
       );

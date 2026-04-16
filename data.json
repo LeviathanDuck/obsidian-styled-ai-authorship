@@ -11,8 +11,8 @@
     "#F08BC8"
   ],
   "orientation": "vertical",
-  "waviness": 1,
-  "showInReadingMode": false,
+  "waviness": 1.65,
+  "showInReadingMode": true,
   "version": 1,
   "files": {
     "workshop/MarkdownLookBook_V 1.md": [
