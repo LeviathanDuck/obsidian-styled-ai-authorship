@@ -52,6 +52,7 @@ interface GradientConfig {
   stops: Stop[];
   orientation: GradientOrientation;
   waviness: number;
+  debug: boolean;
 }
 
 interface SidecarData {
@@ -685,8 +686,7 @@ function createHighlightPlugin(
         const ranges = view.state.field(aiRangeField, false) ?? [];
         if (ranges.length === 0) return Decoration.none;
         const docLength = view.state.doc.length;
-        const { stops, orientation, waviness } = getConfig();
-        const debug = plugin.settings.debug;
+        const { stops, orientation, waviness, debug } = getConfig();
         if (debug) {
           console.group("AiStyled: buildWithMeasurements");
         }
@@ -783,6 +783,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
           stops: stopsFromHex(this.settings.gradientStops),
           orientation: this.settings.orientation,
           waviness: this.settings.waviness,
+          debug: this.settings.debug,
         })
       ),
     ]);
