@@ -478,8 +478,11 @@ function buildGradientField(view: EditorView, rangeFrom: number, rangeTo: number
     fieldSpan: fieldWidth,
     contentLeft: fieldLeft,
     charWidth,
-    waveAmplitude: clamp(fieldWidth * 0.05, 15, 60),
-    wavePeriod: Math.max(topBlock.height, 24) * 8,
+    // 15% of field width at waviness=1 (default). Multiplied by `waviness`
+    // at the build site, so 0% → flat, 100% → 15%, 200% → 30%.
+    waveAmplitude: fieldWidth * 0.15,
+    // ~15 lines per full wave cycle. Gentle meander, not noisy.
+    wavePeriod: Math.max(topBlock.height, 24) * 15,
   };
 }
 
@@ -665,11 +668,15 @@ function createHighlightPlugin(
       // stable and coordsAtPos works. During ViewPlugin.update, CM6 forbids
       // layout reads; position math has to run here instead.
       schedule(view: EditorView) {
-        if (this.pending) return;
+        if (this.pending) {
+          if (getConfig().debug) console.log("AiStyled: schedule skipped (pending)");
+          return;
+        }
         this.pending = true;
         view.requestMeasure({
           read: v => {
             this.pending = false;
+            if (getConfig().debug) console.log("AiStyled: measure read firing");
             return this.buildWithMeasurements(v);
           },
           write: (decos, v) => {
@@ -939,15 +946,49 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       const sourcePath = ctx.sourcePath;
       if (!sourcePath) return;
       const ranges = this.lastPersisted.get(sourcePath);
-      if (!ranges || ranges.length === 0) return;
+
+      if (this.settings.debug) {
+        console.group("AiStyled reader: postProcess");
+        console.log("sourcePath:", sourcePath);
+        console.log("ranges known for this path:", ranges);
+        console.log("element tag:", el.tagName, "textContent (first 80):", (el.textContent ?? "").slice(0, 80));
+      }
+
+      if (!ranges || ranges.length === 0) {
+        if (this.settings.debug) {
+          console.log("no ranges → skip");
+          console.groupEnd();
+        }
+        return;
+      }
 
       const section = ctx.getSectionInfo(el);
-      if (!section) return;
+      if (!section) {
+        if (this.settings.debug) {
+          console.log("getSectionInfo returned null → skip");
+          console.groupEnd();
+        }
+        return;
+      }
+
+      if (this.settings.debug) {
+        console.log("section:", { lineStart: section.lineStart, lineEnd: section.lineEnd });
+      }
 
       const file = this.app.vault.getAbstractFileByPath(sourcePath);
-      if (!(file instanceof TFile)) return;
+      if (!(file instanceof TFile)) {
+        if (this.settings.debug) {
+          console.log("file not found or not TFile → skip");
+          console.groupEnd();
+        }
+        return;
+      }
 
       void this.applyReadingModeHighlight(el, file, section, ranges);
+
+      if (this.settings.debug) {
+        console.groupEnd();
+      }
     });
 
     console.log(
@@ -984,6 +1025,16 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
           break;
         }
       }
+
+      if (this.settings.debug) {
+        console.log("section char range:", {
+          sectionStartOffset,
+          sectionEndOffset,
+          intersects,
+          rangeCount: ranges.length,
+        });
+      }
+
       if (!intersects) return;
 
       const stops = stopsFromHex(this.settings.gradientStops);
@@ -1402,8 +1453,8 @@ class AuthorshipSettingTab extends PluginSettingTab {
 
     const firstRect = spans[0].getBoundingClientRect();
     const lineHeight = Math.max(firstRect.height, 16);
-    const wavePeriod = Math.max(lineHeight, 24) * 8;
-    const amp = clamp(width * 0.02, 8, 18) * waviness;
+    const wavePeriod = Math.max(lineHeight, 24) * 15;
+    const amp = width * 0.15 * waviness;
 
     for (const span of spans) {
       const r = span.getBoundingClientRect();
