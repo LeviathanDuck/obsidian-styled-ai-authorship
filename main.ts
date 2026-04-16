@@ -215,13 +215,20 @@ function sameRanges(a: AIRange[], b: AIRange[]): boolean {
 
 // ---- sidecar I/O ----
 
-const SIDECAR_FOLDER = "authorship";
-const OLD_SIDECAR_FOLDER = ".authorship";
+// Sidecars now live inside the plugin's own installed folder, under
+// `<configDir>/plugins/<PLUGIN_ID>/<SIDECAR_SUBFOLDER>/`. The plugin
+// computes this path at runtime from `app.vault.configDir` so it works
+// regardless of vault location, OS, or a user-renamed config folder.
+// Legacy locations are migrated forward on load.
+const PLUGIN_ID = "aistyled-authorship";
+const SIDECAR_SUBFOLDER = "authorship";
+const LEGACY_ROOT_FOLDER = "authorship";
+const LEGACY_DOT_FOLDER = ".authorship";
 const SIDECAR_VERSION = 1;
 
-function encodeSidecarPath(notePath: string): string {
+function encodeSidecarPath(folder: string, notePath: string): string {
   const encoded = notePath.replace(/\//g, "__");
-  return normalizePath(`${SIDECAR_FOLDER}/${encoded}.json`);
+  return normalizePath(`${folder}/${encoded}.json`);
 }
 
 async function readSidecar(adapter: DataAdapter, sidecarPath: string): Promise<AIRange[]> {
@@ -245,6 +252,7 @@ async function readSidecar(adapter: DataAdapter, sidecarPath: string): Promise<A
 
 async function writeSidecar(
   adapter: DataAdapter,
+  folder: string,
   sidecarPath: string,
   notePath: string,
   ranges: AIRange[]
@@ -254,9 +262,9 @@ async function writeSidecar(
       console.warn("[AiStyled WRITE] ranges empty → skipping (never write empty)");
       return;
     }
-    if (!(await adapter.exists(SIDECAR_FOLDER))) {
-      console.warn("[AiStyled WRITE] creating .authorship/ folder");
-      await adapter.mkdir(SIDECAR_FOLDER);
+    if (!(await adapter.exists(folder))) {
+      console.warn("[AiStyled WRITE] creating sidecar folder:", folder);
+      await adapter.mkdir(folder);
     }
     const data: SidecarData = {
       version: SIDECAR_VERSION,
@@ -284,14 +292,15 @@ async function deleteSidecar(adapter: DataAdapter, sidecarPath: string): Promise
 
 async function moveSidecar(
   adapter: DataAdapter,
+  folder: string,
   fromPath: string,
   toPath: string
 ): Promise<void> {
   try {
     if (!(await adapter.exists(fromPath))) return;
     const raw = await adapter.read(fromPath);
-    if (!(await adapter.exists(SIDECAR_FOLDER))) {
-      await adapter.mkdir(SIDECAR_FOLDER);
+    if (!(await adapter.exists(folder))) {
+      await adapter.mkdir(folder);
     }
     await adapter.write(toPath, raw);
     await adapter.remove(fromPath);
@@ -902,10 +911,12 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (file instanceof TFile) {
+          const folder = this.sidecarFolder;
           void moveSidecar(
             this.app.vault.adapter,
-            encodeSidecarPath(oldPath),
-            encodeSidecarPath(file.path)
+            folder,
+            encodeSidecarPath(folder, oldPath),
+            encodeSidecarPath(folder, file.path)
           );
           const cached = this.lastPersisted.get(oldPath);
           if (cached) {
@@ -921,12 +932,14 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     );
 
     // Sidecar arrived via sync — merge its ranges with the current editor
-    // state (union). This way ranges from other devices are ADDED to this
-    // device's ranges, not replace-or-skip. Supports multi-device editing
-    // where each device adds its own AI styling.
+    // state (union). Vault events only fire for files inside the vault
+    // proper, so this listener no longer fires for sidecars now that they
+    // live under `<configDir>/plugins/<id>/`. Cross-device updates are
+    // picked up on next note open via hydrateFile instead. Kept for files
+    // that may still land at the legacy vault-root location.
     const onSidecarTouched = (filePath: string) => {
-      if (!filePath.startsWith(SIDECAR_FOLDER + "/")) return;
-      const filename = filePath.slice(SIDECAR_FOLDER.length + 1);
+      if (!filePath.startsWith(LEGACY_ROOT_FOLDER + "/")) return;
+      const filename = filePath.slice(LEGACY_ROOT_FOLDER.length + 1);
       const encoded = filename.endsWith(".json") ? filename.slice(0, -5) : filename;
       const notePath = encoded.replace(/__/g, "/");
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
@@ -948,7 +961,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", file => {
         if (file instanceof TFile) {
-          void deleteSidecar(this.app.vault.adapter, encodeSidecarPath(file.path));
+          void deleteSidecar(this.app.vault.adapter, encodeSidecarPath(this.sidecarFolder, file.path));
           this.lastPersisted.delete(file.path);
           this.hydrated.delete(file.path);
           const pending = this.writeTimers.get(file.path);
@@ -1154,7 +1167,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
   private async mergeSidecarIntoView(file: TFile) {
     const ranges = await readSidecar(
       this.app.vault.adapter,
-      encodeSidecarPath(file.path)
+      encodeSidecarPath(this.sidecarFolder, file.path)
     );
     if (ranges.length === 0) return;
 
@@ -1209,7 +1222,7 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
 
     const ranges = await readSidecar(
       this.app.vault.adapter,
-      encodeSidecarPath(file.path)
+      encodeSidecarPath(this.sidecarFolder, file.path)
     );
 
     if (ranges.length === 0) {
@@ -1309,41 +1322,59 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
   }
 
   private async flushSidecar(notePath: string, ranges: AIRange[]) {
-    const sidecarPath = encodeSidecarPath(notePath);
+    const folder = this.sidecarFolder;
+    const sidecarPath = encodeSidecarPath(folder, notePath);
     console.warn("[AiStyled PERSIST] flushSidecar:", sidecarPath, "ranges:", ranges.length);
-    await writeSidecar(this.app.vault.adapter, sidecarPath, notePath, ranges);
+    await writeSidecar(this.app.vault.adapter, folder, sidecarPath, notePath, ranges);
     console.warn("[AiStyled PERSIST] writeSidecar completed for", sidecarPath);
     this.lastPersisted.set(notePath, ranges);
   }
 
+  private get sidecarFolder(): string {
+    return normalizePath(
+      `${this.app.vault.configDir}/plugins/${PLUGIN_ID}/${SIDECAR_SUBFOLDER}`
+    );
+  }
+
   private async migrateSidecarFolder() {
+    // 0.1.8 migration: copy sidecars from legacy vault-root locations into
+    // the plugin-folder location. We COPY (not move) and leave the old
+    // folders intact — the wizard removes them manually once the new
+    // location is verified working across devices.
     const adapter = this.app.vault.adapter;
-    try {
-      if (!(await adapter.exists(OLD_SIDECAR_FOLDER))) return;
-      const listing = await adapter.list(OLD_SIDECAR_FOLDER);
-      if (listing.files.length === 0) {
-        await adapter.rmdir(OLD_SIDECAR_FOLDER, false);
-        return;
-      }
-      if (!(await adapter.exists(SIDECAR_FOLDER))) {
-        await adapter.mkdir(SIDECAR_FOLDER);
-      }
-      for (const oldPath of listing.files) {
-        const filename = oldPath.split("/").pop();
-        if (!filename) continue;
-        const newPath = normalizePath(`${SIDECAR_FOLDER}/${filename}`);
-        try {
-          const content = await adapter.read(oldPath);
-          await adapter.write(newPath, content);
-          await adapter.remove(oldPath);
-        } catch {
-          // skip individual file errors
+    const target = this.sidecarFolder;
+    const legacyLocations = [LEGACY_DOT_FOLDER, LEGACY_ROOT_FOLDER];
+
+    for (const src of legacyLocations) {
+      try {
+        if (!(await adapter.exists(src))) continue;
+        const listing = await adapter.list(src);
+        if (listing.files.length === 0) continue;
+        if (!(await adapter.exists(target))) {
+          await adapter.mkdir(target);
         }
+        let copied = 0;
+        for (const oldPath of listing.files) {
+          const filename = oldPath.split("/").pop();
+          if (!filename) continue;
+          const newPath = normalizePath(`${target}/${filename}`);
+          try {
+            if (await adapter.exists(newPath)) continue;
+            const content = await adapter.read(oldPath);
+            await adapter.write(newPath, content);
+            copied++;
+          } catch {
+            // skip individual file errors
+          }
+        }
+        if (copied > 0) {
+          console.log(
+            `AiStyled-Authorship: copied ${copied} sidecar(s) from ${src}/ to ${target}/`
+          );
+        }
+      } catch (err) {
+        console.warn(`AiStyled-Authorship: sidecar migration from ${src}/ failed`, err);
       }
-      await adapter.rmdir(OLD_SIDECAR_FOLDER, false).catch(() => {});
-      console.log("AiStyled-Authorship: migrated sidecar folder from .authorship/ to authorship/");
-    } catch (err) {
-      console.warn("AiStyled-Authorship: sidecar migration failed", err);
     }
   }
 
@@ -1477,16 +1508,20 @@ class AuthorshipSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     const { syncEnabled, otherTypesEnabled } = this.detectSyncConfig();
 
-    // Only show the banner when something might need attention.
-    // Case 1: sync enabled AND we confirmed "other types" is off → red warning
-    // Case 2: sync enabled AND we couldn't detect → soft reminder
-    // Case 3: sync disabled → info only if using Obsidian Sync
-    // Case 4: "other types" is on → no banner (happy path)
-    if (syncEnabled && otherTypesEnabled === true) return;
+    // 0.1.8: sidecars now live inside the plugin's installed folder
+    // (<configDir>/plugins/<id>/authorship/). The sync path no longer
+    // depends on "Sync all other file types" — it's tied to plugin sync
+    // toggles instead. Until we can reliably detect those specific
+    // toggles, show an info banner whenever Obsidian Sync is enabled so
+    // the user knows which setting governs multi-device styling now.
+    // `otherTypesEnabled` is retained from detectSyncConfig for possible
+    // future diagnostics but no longer drives banner severity.
+    void otherTypesEnabled;
+    if (!syncEnabled) return;
 
     const banner = containerEl.createDiv();
-    const isError = syncEnabled && otherTypesEnabled === false;
-    const accent = isError ? "#E57373" : "#F0B84A";
+    const isError = false;
+    const accent = "#F0B84A";
     banner.setAttr(
       "style",
       `border-left: 4px solid ${accent}; ` +
@@ -1516,37 +1551,22 @@ class AuthorshipSettingTab extends PluginSettingTab {
       '<path d="M12 19h.01"/>' +
       "</svg>";
     title.createSpan({
-      text: isError
-        ? "Sync setting required for multi-device styling"
-        : "Check your sync settings for multi-device styling",
+      text: "Multi-device sync now rides plugin sync",
     });
 
     const body = banner.createEl("p");
     body.setAttr("style", "margin: 0 0 6px 0; font-size: 0.9em;");
-    if (isError) {
-      body.appendText(
-        "Obsidian Sync is running, but \"Sync all other file types\" appears to be off. " +
-        "AI styling is stored as JSON in the authorship/ folder. Without this setting, " +
-        "sidecar files won't sync across devices and styling won't appear on your other devices."
-      );
-    } else if (syncEnabled) {
-      body.appendText(
-        "Obsidian Sync is running, but I can't detect whether \"Sync all other file types\" is enabled. " +
-        "For AI styling to sync across devices, make sure that setting is on. The plugin stores " +
-        "styling as JSON files in the authorship/ folder at your vault root."
-      );
-    } else {
-      body.appendText(
-        "If you use Obsidian Sync (or iCloud Drive / Dropbox / other vault sync), " +
-        "styling syncs via JSON files in the authorship/ folder. For Obsidian Sync specifically, " +
-        "you must enable \"Sync all other file types\" in Settings → Sync."
-      );
-    }
+    body.appendText(
+      "Styling is stored inside this plugin's installed folder (authorship/ " +
+      "subfolder). For the gradient to appear on your other devices, make " +
+      "sure \"Installed community plugins\" is enabled in Settings → Sync " +
+      "on every device. \"Sync all other file types\" is no longer required."
+    );
 
     const fix = banner.createEl("p");
     fix.setAttr("style", "margin: 0; font-size: 0.85em; color: var(--text-muted);");
     fix.appendText(
-      "Fix: Settings → Core plugins → Sync → enable \"Sync all other file types\". " +
+      "Fix: Settings → Core plugins → Sync → enable \"Installed community plugins\". " +
       "Do this on every device."
     );
   }
@@ -1556,7 +1576,7 @@ class AuthorshipSettingTab extends PluginSettingTab {
     this.aboutPreviewEl.empty();
 
     const texts: string[] = [
-      "Authorship data is stored in a .authorship/ folder at the root of your vault. The folder syncs with Obsidian Sync, iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically.",
+      "Authorship data is stored inside this plugin's installed folder (authorship/ subfolder). It rides Obsidian's plugin-sync path — enable \"Installed community plugins\" in Settings → Sync and the gradient follows your notes across devices automatically.",
       "Typing inside AI-styled text produces normal characters. The gradient only survives where you haven't edited it — so the marker fades in proportion to how much of the text has come from you.",
       "A project of the Leviathan Duck from Leftcoast Media House Inc.",
     ];
