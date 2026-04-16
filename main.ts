@@ -714,9 +714,15 @@ function createHighlightPlugin(
             });
           }
 
+          // Chunk into groups of CHUNK_SIZE characters. Each chunk gets the
+          // color of its first character's measured position. This keeps the
+          // DOM manageable (~200 spans for a 1000-char range instead of 1000)
+          // while preserving per-position gradient accuracy.
+          const CHUNK_SIZE = 5;
           for (const slice of buildVisibleSlices(view, { from, to })) {
             const debugSamples: Array<{ pos: number; x: number; y: number; d: number }> = [];
-            for (let pos = slice.from; pos < slice.to; pos++) {
+            for (let pos = slice.from; pos < slice.to; pos += CHUNK_SIZE) {
+              const chunkEnd = Math.min(pos + CHUNK_SIZE, slice.to);
               let coords: { left: number; right: number; top: number; bottom: number } | null = null;
               try {
                 coords = view.coordsAtPos(pos, 1);
@@ -740,14 +746,14 @@ function createHighlightPlugin(
               }
 
               const color = colorAt(stops, d);
-              builder.add(pos, pos + 1, buildLineDecoration(color));
+              builder.add(pos, chunkEnd, buildLineDecoration(color));
 
               if (debug && debugSamples.length < 5) {
                 debugSamples.push({ pos, x, y, d });
               }
             }
             if (debug) {
-              console.log(`slice [${slice.from}..${slice.to}] first 5 chars:`, debugSamples);
+              console.log(`slice [${slice.from}..${slice.to}] first 5 chunks:`, debugSamples);
             }
           }
         }
