@@ -386,42 +386,35 @@ function buildLineGradient(
   amp: number,
   field: GradientField,
   block: { from: number; to: number; top: number; bottom: number; height: number },
-  segFrom: number,
-  segTo: number
+  markLeftPx: number,
+  markRightPx: number
 ): string {
   const N = 20; // sample density
   const parts: string[] = [];
-
-  // Map the mark element's local x (0..1) into field pixel space using the
-  // character offsets + estimated char width. This lets us evaluate distance
-  // from the ribbon in FIELD coordinates even though the gradient is applied
-  // to a mark element that's only as wide as its own text.
-  const markCharStart = Math.max(0, segFrom - block.from);
-  const markCharCount = Math.max(1, segTo - segFrom);
-  const markLeftPx = field.contentLeft + markCharStart * field.charWidth;
-  const markRightPx = markLeftPx + markCharCount * field.charWidth;
+  const span = Math.max(markRightPx - markLeftPx, 1);
 
   if (orientation === "vertical") {
-    // River: for each sample, get its absolute field pixel-x, compute
-    // distance to the ribbon's centerX (which drifts line-to-line via wave).
+    // River: for each sample at xFrac of the mark element, convert to the
+    // corresponding absolute pixel-x in the field, then compute distance
+    // to the drifting ribbon center.
     const phase = ((block.top - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
     const centerPx = field.baseCenterX + Math.sin(phase) * amp;
     const hRadius = Math.max(field.horizontalRadius, 1);
 
     for (let i = 0; i <= N; i++) {
       const xFrac = i / N;
-      const pixelX = markLeftPx + xFrac * (markRightPx - markLeftPx);
+      const pixelX = markLeftPx + xFrac * span;
       const d = clamp(Math.abs(pixelX - centerPx) / hRadius, 0, 1);
       parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(2)}%`);
     }
   } else {
-    // Sunset: each sample uses its absolute field x to get a centerY (which
-    // drifts with x via wave), then compares against the line's y.
+    // Sunset: each sample's absolute pixel-x yields a centerY that drifts
+    // with x, then we compare the line's rowY to that.
     const rowY = block.top + block.height / 2;
     const vRadius = Math.max(field.verticalRadius, 1);
     for (let i = 0; i <= N; i++) {
       const xFrac = i / N;
-      const pixelX = markLeftPx + xFrac * (markRightPx - markLeftPx);
+      const pixelX = markLeftPx + xFrac * span;
       const phase = ((pixelX - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
       const centerY = field.baseCenterY + Math.sin(phase) * amp;
       const d = clamp(Math.abs(rowY - centerY) / vRadius, 0, 1);
@@ -595,10 +588,11 @@ function createHighlightPlugin(
 ) {
   return ViewPlugin.fromClass(
     class {
-      decorations: DecorationSet;
+      decorations: DecorationSet = Decoration.none;
+      private pending = false;
 
       constructor(view: EditorView) {
-        this.decorations = this.build(view);
+        this.schedule(view);
       }
 
       update(update: ViewUpdate) {
@@ -616,7 +610,7 @@ function createHighlightPlugin(
           rangesChanged ||
           refreshRequested
         ) {
-          this.decorations = this.build(update.view);
+          this.schedule(update.view);
         }
 
         if (rangesChanged || update.docChanged) {
@@ -624,9 +618,31 @@ function createHighlightPlugin(
         }
       }
 
-      build(view: EditorView): DecorationSet {
+      // Defer decoration computation to CM6's measure phase, where layout is
+      // stable and coordsAtPos works. During ViewPlugin.update, CM6 forbids
+      // layout reads; position math has to run here instead.
+      schedule(view: EditorView) {
+        if (this.pending) return;
+        this.pending = true;
+        view.requestMeasure({
+          read: v => {
+            this.pending = false;
+            return this.buildWithMeasurements(v);
+          },
+          write: (decos, v) => {
+            if (decos) {
+              this.decorations = decos;
+              // Trigger a re-render so CM6 picks up the new decorations.
+              v.dispatch({ effects: refreshDecorationsEffect.of(null) });
+            }
+          },
+        });
+      }
+
+      buildWithMeasurements(view: EditorView): DecorationSet | null {
         const builder = new RangeSetBuilder<Decoration>();
         const ranges = view.state.field(aiRangeField, false) ?? [];
+        if (ranges.length === 0) return Decoration.none;
         const docLength = view.state.doc.length;
         const { stops, orientation, waviness } = getConfig();
 
@@ -646,15 +662,32 @@ function createHighlightPlugin(
               const segTo = Math.min(block.to, slice.to);
 
               if (segTo > segFrom) {
-                // Gradient sampled in FIELD coordinates: for each sample
-                // position along the mark (0-1 line-local), convert to the
-                // mark's absolute position in the editor's content column,
-                // then compute distance from the ribbon. This gives a flow
-                // that carries consistently line-to-line — short lines on
-                // the left stay pink; lines spanning the column reach blue
-                // in the middle.
+                // Measure real pixel bounds of this mark via coordsAtPos.
+                // Works in the measure-read phase.
+                let markLeftPx: number | null = null;
+                let markRightPx: number | null = null;
+                try {
+                  const sc = view.coordsAtPos(segFrom, 1);
+                  const ec = view.coordsAtPos(segTo, -1);
+                  if (sc && ec) {
+                    markLeftPx = sc.left;
+                    markRightPx = ec.right;
+                  }
+                } catch {
+                  // fall through to approximation
+                }
+
+                if (markLeftPx == null || markRightPx == null) {
+                  // Approximation fallback when measurement unavailable.
+                  const startOffset = Math.max(0, segFrom - block.from);
+                  const count = Math.max(1, segTo - segFrom);
+                  markLeftPx = field.contentLeft + startOffset * field.charWidth;
+                  markRightPx = markLeftPx + count * field.charWidth;
+                }
+
                 const gradient = buildLineGradient(
-                  stops, orientation, amp, field, block, segFrom, segTo
+                  stops, orientation, amp, field, block,
+                  markLeftPx, markRightPx
                 );
                 builder.add(segFrom, segTo, buildGradientLineDeco(gradient));
               }
