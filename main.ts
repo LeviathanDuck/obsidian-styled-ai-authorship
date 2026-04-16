@@ -215,15 +215,53 @@ function sameRanges(a: AIRange[], b: AIRange[]): boolean {
 
 // ---- sidecar I/O ----
 
-// Sidecars live in a visible `authorship/` folder at the vault root.
+// Sidecars live in a visible `z-author-sync/` folder at the vault root.
 // Rides the same sync path as markdown when "Sync all other file types"
-// is enabled in Obsidian Sync. We tried `<configDir>/plugins/<id>/...`
-// in 0.1.8 but Obsidian Sync does not continuously sync runtime-written
-// files inside plugin folders — 0.1.9 reverts and migrates back.
+// is enabled in Obsidian Sync. The `z-` prefix sorts the folder to the
+// bottom of the file explorer so it stays out of the way.
 const PLUGIN_ID = "aistyled-authorship";
-const SIDECAR_FOLDER = "authorship";
+const SIDECAR_FOLDER = "z-author-sync";
 const LEGACY_DOT_FOLDER = ".authorship";
+const LEGACY_VAULT_ROOT_FOLDER = "authorship";
 const SIDECAR_VERSION = 1;
+
+const SIDECAR_README_FILENAME = "README.md";
+const SIDECAR_README_BODY = `# AI Styled Authorship — sync data
+
+This folder exists to sync AI authorship styling across your devices.
+Each note that has AI-pasted text gets a small JSON sidecar here, tracking
+which character ranges the plugin should color as AI-authored.
+
+## Hide this folder in Obsidian
+
+You can hide this folder from the file explorer without affecting sync:
+
+1. Open **Settings → Files and links**.
+2. Under **Excluded files**, click **Add excluded folder**.
+3. Type: \`z-author-sync/\`
+4. Close settings.
+
+The folder will stop appearing in searches, graph views, and the file
+explorer. Sync and the plugin still read and write here normally.
+
+## Why the \`z-\` prefix?
+
+The folder is named \`z-author-sync\` so it sorts to the bottom of the
+file explorer by default, keeping it out of the way. Older versions of
+the plugin used \`authorship/\` — sidecars are migrated automatically on
+load.
+
+## Safe to delete?
+
+Deleting this folder erases all AI-authorship gradients in your vault.
+The plugin will rebuild sidecars as you paste new AI text, but existing
+styling on older notes will be lost. If you just want the folder out of
+sight, use the excluded-folder setting above instead.
+
+---
+
+*Created and maintained by the AI Styled Authorship plugin.*
+`;
 
 function encodeSidecarPath(folder: string, notePath: string): string {
   const encoded = notePath.replace(/\//g, "__");
@@ -937,7 +975,9 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     const onSidecarTouched = (filePath: string) => {
       if (!filePath.startsWith(SIDECAR_FOLDER + "/")) return;
       const filename = filePath.slice(SIDECAR_FOLDER.length + 1);
-      const encoded = filename.endsWith(".json") ? filename.slice(0, -5) : filename;
+      if (filename === SIDECAR_README_FILENAME) return;
+      if (!filename.endsWith(".json")) return;
+      const encoded = filename.slice(0, -5);
       const notePath = encoded.replace(/__/g, "/");
       const noteFile = this.app.vault.getAbstractFileByPath(notePath);
       if (!(noteFile instanceof TFile)) return;
@@ -1339,13 +1379,19 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
   private async migrateSidecarFolder() {
     // Migrations run on every load. We COPY (not move) and leave old
     // folders intact so the wizard can verify before cleanup. Idempotent
-    // — sidecars already present in the target are skipped.
+    // — sidecars already present in the target are skipped. After
+    // migration we ensure the README is present.
     //
-    //   .authorship/                             -> authorship/   (very old dotfolder)
-    //   <configDir>/plugins/<id>/authorship/     -> authorship/   (0.1.8, doesn't sync)
+    //   .authorship/                             -> z-author-sync/   (very old)
+    //   authorship/                              -> z-author-sync/   (0.1.9)
+    //   <configDir>/plugins/<id>/authorship/     -> z-author-sync/   (0.1.8)
     const adapter = this.app.vault.adapter;
     const target = this.sidecarFolder;
-    const legacyLocations = [LEGACY_DOT_FOLDER, this.pluginFolderSidecarPath];
+    const legacyLocations = [
+      LEGACY_DOT_FOLDER,
+      LEGACY_VAULT_ROOT_FOLDER,
+      this.pluginFolderSidecarPath,
+    ];
 
     for (const src of legacyLocations) {
       try {
@@ -1359,6 +1405,8 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
         for (const oldPath of listing.files) {
           const filename = oldPath.split("/").pop();
           if (!filename) continue;
+          // Never migrate the README from an old location.
+          if (filename === SIDECAR_README_FILENAME) continue;
           const newPath = normalizePath(`${target}/${filename}`);
           try {
             if (await adapter.exists(newPath)) continue;
@@ -1377,6 +1425,31 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
       } catch (err) {
         console.warn(`AiStyled-Authorship: sidecar migration from ${src}/ failed`, err);
       }
+    }
+
+    await this.ensureSidecarReadme();
+  }
+
+  private async ensureSidecarReadme() {
+    // Create (or refresh) the explainer README inside the sync folder.
+    // Writes on every load so the instructions stay current if we change
+    // them in a later version; users who edit their copy will see it
+    // overwritten, which is acceptable for a plugin-owned explainer.
+    const adapter = this.app.vault.adapter;
+    const folder = this.sidecarFolder;
+    const readmePath = normalizePath(`${folder}/${SIDECAR_README_FILENAME}`);
+    try {
+      if (!(await adapter.exists(folder))) {
+        await adapter.mkdir(folder);
+      }
+      const existing = (await adapter.exists(readmePath))
+        ? await adapter.read(readmePath)
+        : null;
+      if (existing !== SIDECAR_README_BODY) {
+        await adapter.write(readmePath, SIDECAR_README_BODY);
+      }
+    } catch (err) {
+      console.warn("AiStyled-Authorship: failed to write sidecar README", err);
     }
   }
 
@@ -1559,19 +1632,19 @@ class AuthorshipSettingTab extends PluginSettingTab {
     if (isError) {
       body.appendText(
         "Obsidian Sync is running, but \"Sync all other file types\" appears to be off. " +
-        "AI styling is stored as JSON in the authorship/ folder. Without this setting, " +
+        "AI styling is stored as JSON in the z-author-sync/ folder. Without this setting, " +
         "sidecar files won't sync across devices and styling won't appear on your other devices."
       );
     } else if (syncEnabled) {
       body.appendText(
         "Obsidian Sync is running, but I can't detect whether \"Sync all other file types\" is enabled. " +
         "For AI styling to sync across devices, make sure that setting is on. The plugin stores " +
-        "styling as JSON files in the authorship/ folder at your vault root."
+        "styling as JSON files in the z-author-sync/ folder at your vault root."
       );
     } else {
       body.appendText(
         "If you use Obsidian Sync (or iCloud Drive / Dropbox / other vault sync), " +
-        "styling syncs via JSON files in the authorship/ folder. For Obsidian Sync specifically, " +
+        "styling syncs via JSON files in the z-author-sync/ folder. For Obsidian Sync specifically, " +
         "you must enable \"Sync all other file types\" in Settings → Sync."
       );
     }
@@ -1589,7 +1662,7 @@ class AuthorshipSettingTab extends PluginSettingTab {
     this.aboutPreviewEl.empty();
 
     const texts: string[] = [
-      "Authorship data is stored in an authorship/ folder at the root of your vault. The folder syncs with Obsidian Sync (enable \"Sync all other file types\"), iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically.",
+      "Authorship data is stored in a z-author-sync/ folder at the root of your vault (the z- prefix sorts it to the bottom of the file list). The folder syncs with Obsidian Sync (enable \"Sync all other file types\"), iCloud Drive, Dropbox, or any other vault sync tool — the gradient follows your notes across devices automatically.",
       "Typing inside AI-styled text produces normal characters. The gradient only survives where you haven't edited it — so the marker fades in proportion to how much of the text has come from you.",
       "A project of the Leviathan Duck from Leftcoast Media House Inc.",
     ];
