@@ -385,34 +385,44 @@ function buildLineGradient(
   orientation: GradientOrientation,
   amp: number,
   field: GradientField,
-  block: { from: number; to: number; top: number; bottom: number; height: number }
+  block: { from: number; to: number; top: number; bottom: number; height: number },
+  segFrom: number,
+  segTo: number
 ): string {
   const N = 20; // sample density
   const parts: string[] = [];
 
+  // Map the mark element's local x (0..1) into field pixel space using the
+  // character offsets + estimated char width. This lets us evaluate distance
+  // from the ribbon in FIELD coordinates even though the gradient is applied
+  // to a mark element that's only as wide as its own text.
+  const markCharStart = Math.max(0, segFrom - block.from);
+  const markCharCount = Math.max(1, segTo - segFrom);
+  const markLeftPx = field.contentLeft + markCharStart * field.charWidth;
+  const markRightPx = markLeftPx + markCharCount * field.charWidth;
+
   if (orientation === "vertical") {
-    // River: each line sweeps pink-blue-pink horizontally.
-    // Wave drifts the blue center line-by-line (vertical ribbon meander).
+    // River: for each sample, get its absolute field pixel-x, compute
+    // distance to the ribbon's centerX (which drifts line-to-line via wave).
     const phase = ((block.top - field.rangeTop) / field.wavePeriod) * Math.PI * 2;
     const centerPx = field.baseCenterX + Math.sin(phase) * amp;
-    const widthPx = Math.max(field.fieldSpan, 1);
-    const centerFrac = clamp((centerPx - field.fieldLeft) / widthPx, 0, 1);
-    const radiusFrac = 0.5;
+    const hRadius = Math.max(field.horizontalRadius, 1);
 
     for (let i = 0; i <= N; i++) {
       const xFrac = i / N;
-      const d = clamp(Math.abs(xFrac - centerFrac) / radiusFrac, 0, 1);
+      const pixelX = markLeftPx + xFrac * (markRightPx - markLeftPx);
+      const d = clamp(Math.abs(pixelX - centerPx) / hRadius, 0, 1);
       parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(2)}%`);
     }
   } else {
-    // Sunset: each line samples colors along x based on vertical distance
-    // from a centerY that drifts with x.
+    // Sunset: each sample uses its absolute field x to get a centerY (which
+    // drifts with x via wave), then compares against the line's y.
     const rowY = block.top + block.height / 2;
     const vRadius = Math.max(field.verticalRadius, 1);
     for (let i = 0; i <= N; i++) {
       const xFrac = i / N;
-      const xPx = field.fieldLeft + xFrac * field.fieldSpan;
-      const phase = ((xPx - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
+      const pixelX = markLeftPx + xFrac * (markRightPx - markLeftPx);
+      const phase = ((pixelX - field.fieldLeft) / field.wavePeriod) * Math.PI * 2;
       const centerY = field.baseCenterY + Math.sin(phase) * amp;
       const d = clamp(Math.abs(rowY - centerY) / vRadius, 0, 1);
       parts.push(`${colorAt(stops, d)} ${(xFrac * 100).toFixed(2)}%`);
@@ -636,11 +646,16 @@ function createHighlightPlugin(
               const segTo = Math.min(block.to, slice.to);
 
               if (segTo > segFrom) {
-                // Build a CSS linear-gradient covering this visual line segment.
-                // The browser renders the gradient across the line's actual
-                // rendered width, handling proportional character widths
-                // naturally — no more math-estimated character positions.
-                const gradient = buildLineGradient(stops, orientation, amp, field, block);
+                // Gradient sampled in FIELD coordinates: for each sample
+                // position along the mark (0-1 line-local), convert to the
+                // mark's absolute position in the editor's content column,
+                // then compute distance from the ribbon. This gives a flow
+                // that carries consistently line-to-line — short lines on
+                // the left stay pink; lines spanning the column reach blue
+                // in the middle.
+                const gradient = buildLineGradient(
+                  stops, orientation, amp, field, block, segFrom, segTo
+                );
                 builder.add(segFrom, segTo, buildGradientLineDeco(gradient));
               }
 
