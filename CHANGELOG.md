@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.5 — 2026-04-17
+
+Default storage backend flipped from sidecar to data.json. The
+single-file backend is simpler for the typical case (one user, one or
+two devices, modest range counts) and avoids the visible
+`z-author-sync/` folder showing up in the vault. Existing installs
+keep whatever backend they already had — only fresh installs get the
+new default.
+
+The settings UI now explains both options on the dropdown and in the
+data.json info panel: data.json is the default, but the Sidecar
+folder option is preferable if you have hundreds-to-thousands of
+notes with AI styling **and** multiple devices editing
+simultaneously. In that scenario the per-note partitioning of
+sidecars prevents the whole-file overwrite that data.json is
+vulnerable to.
+
 ## 0.2.0 — 2026-04-17
 
 Major storage iteration. Authorship records now use an event-sourced

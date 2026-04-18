@@ -130,7 +130,7 @@ const DEFAULT_SETTINGS: AuthorshipSettings = {
   debug: false,
   sidecarFolderPath: "z-author-sync",
   previousSidecarFolderPath: null,
-  storageBackend: "sidecar",
+  storageBackend: "dataJson",
   deviceId: "",
   deviceLabel: "",
 };
@@ -2507,26 +2507,29 @@ class AuthorshipSettingTab extends PluginSettingTab {
       "color: var(--text-muted); font-size: 0.9em; margin-top: -0.4em;"
     );
     desc.appendText(
-      "Choose where this plugin stores its authorship records. The sidecar " +
-        "folder option keeps one JSON file per note alongside your vault, " +
-        "which gives the cleanest multi-device sync behavior. The data.json " +
-        "option stores everything in a single file inside the plugin folder."
+      "Choose where this plugin stores its authorship records. The data.json " +
+        "option (default) keeps everything in a single file inside the plugin " +
+        "folder — simpler for most users. The sidecar folder option keeps " +
+        "one JSON file per note alongside your vault, which scales better " +
+        "and gives stronger multi-device sync behavior."
     );
 
     new Setting(containerEl)
       .setName("Storage backend")
       .setDesc(
-        "Sidecar folder (recommended): one JSON file per note in a vault " +
-          "folder. Each device can edit independently — sync conflicts are " +
-          "detected and merged automatically. data.json: a single file in " +
-          ".obsidian/plugins/aistyled-authorship/. WARNING: simultaneous " +
-          "offline edits on two devices can lose data because the whole " +
-          "file is overwritten by the sync tool."
+        "data.json (default): all records in one file inside " +
+          ".obsidian/plugins/aistyled-authorship/. Simple and works well " +
+          "for most vaults. If you have hundreds or thousands of notes " +
+          "with AI styling AND multiple devices editing simultaneously, " +
+          "the sidecar option may be preferable — it scales as one small " +
+          "file per note and uses per-note conflict isolation, so two " +
+          "devices editing different notes offline can never lose each " +
+          "other's data."
       )
       .addDropdown(drop =>
         drop
-          .addOption("sidecar", "Sidecar folder (recommended)")
-          .addOption("dataJson", "data.json (single file)")
+          .addOption("dataJson", "data.json (default)")
+          .addOption("sidecar", "Sidecar folder (better at scale)")
           .setValue(this.plugin.settings.storageBackend)
           .onChange(async value => {
             const next = value as "sidecar" | "dataJson";
@@ -2596,12 +2599,15 @@ class AuthorshipSettingTab extends PluginSettingTab {
         "border: 1px solid var(--background-modifier-border); border-radius: 6px; " +
         "background: var(--background-secondary); font-size: 0.9em;",
     );
-    note.createEl("strong", { text: "data.json mode active. " });
+    note.createEl("strong", { text: "data.json mode active (default). " });
     note.appendText(
       "Authorship records live in .obsidian/plugins/aistyled-authorship/data.json. " +
-        "If both devices edit notes while offline, the sync tool overwrites the " +
-        "whole file — one device's changes will be lost. Switch to Sidecar folder " +
-        "for safer multi-device sync.",
+        "Works well for most vaults. Note: if you have hundreds or thousands of " +
+        "notes with AI styling AND multiple devices editing simultaneously while " +
+        "offline, the sync tool may overwrite the whole file with one device's " +
+        "version, losing the other's changes. In that scenario the Sidecar folder " +
+        "option is preferable — it stores one small file per note so devices " +
+        "editing different notes never collide.",
     );
   }
 
