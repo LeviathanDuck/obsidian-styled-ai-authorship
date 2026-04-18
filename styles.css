@@ -15,3 +15,26 @@
   background: transparent !important;
   text-decoration-color: inherit !important;
 }
+
+/* ---- Author block ---- */
+.asa-author-block {
+  text-align: center;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.asa-author-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50% !important;
+  display: inline-block;
+}
+.asa-author-name {
+  font-weight: 600;
+  margin-top: 8px;
+}
+.asa-author-meta {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 2px;
+}

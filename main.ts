@@ -2306,6 +2306,38 @@ class AuthorshipSettingTab extends PluginSettingTab {
       );
 
     this.renderDataStorageSection(containerEl);
+
+    // ---- Author block ----
+    const authorBlock = containerEl.createDiv({ cls: "asa-author-block" });
+    const authorLink = authorBlock.createEl("a", {
+      href: "https://github.com/LeviathanDuck",
+    });
+    authorLink.setAttr("target", "_blank");
+    authorLink.setAttr("rel", "noopener");
+    authorLink.createEl("img", {
+      attr: {
+        src: this.app.vault.adapter.getResourcePath(
+          ".obsidian/plugins/aistyled-authorship/assets/LeviathanDuck.png"
+        ),
+        alt: "LeviathanDuck",
+      },
+      cls: "asa-author-avatar",
+    });
+    authorBlock.createEl("div", {
+      cls: "asa-author-name",
+      text: "Leviathan Duck",
+    });
+    authorBlock.createEl("div", {
+      cls: "asa-author-meta",
+      text: "Leftcoast Media House Inc.",
+    });
+    const moreDiv = authorBlock.createEl("div", { cls: "asa-author-meta" });
+    const moreLink = moreDiv.createEl("a", {
+      text: "More Obsidian plugins & themes",
+      href: "https://github.com/LeviathanDuck?tab=repositories",
+    });
+    moreLink.setAttr("target", "_blank");
+    moreLink.setAttr("rel", "noopener");
   }
 
   // --- Data storage section (bottom of the settings panel) ---

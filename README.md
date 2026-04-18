@@ -42,3 +42,19 @@ Back up your data. The author accepts no liability for data loss, corruption, or
 *A project of the Leviathan Duck from Leftcoast Media House Inc.*
 
 MIT. Copyright © 2026 Leftcoast Media House Inc.
+
+---
+
+## Author
+
+<p align="center">
+  <a href="https://github.com/LeviathanDuck">
+    <img src="./assets/LeviathanDuck.png" width="100" alt="LeviathanDuck" style="border-radius:50%" />
+  </a>
+</p>
+
+<p align="center">
+  Built by <a href="https://github.com/LeviathanDuck">Leviathan Duck</a> — Leftcoast Media House Inc.<br/>
+  Licensed under <a href="./LICENSE">MIT</a>.<br/>
+  <a href="https://github.com/LeviathanDuck?tab=repositories">More Obsidian plugins &amp; themes</a>
+</p>
