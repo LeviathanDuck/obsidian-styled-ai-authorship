@@ -1718,6 +1718,159 @@ class DeleteCacheModal extends Modal {
   }
 }
 
+// ---- Old-sidecar-folder cleanup modal ----
+// Shown after "Migrate data now" succeeds. Scans the old folder; if every
+// file looks like a sidecar (.md.json), offers a simple delete. If any
+// file doesn't look like a sidecar, lists them and requires an explicit
+// "I understand" checkbox before enabling the delete button.
+
+class OldFolderCleanupModal extends Modal {
+  constructor(
+    app: App,
+    private plugin: LeftcoastAuthorshipPlugin,
+    private oldFolder: string,
+    private onDone: () => void,
+  ) {
+    super(app);
+  }
+
+  async onOpen(): Promise<void> {
+    const { contentEl, titleEl } = this;
+    titleEl.setText("Delete old sidecar folder?");
+    contentEl.empty();
+
+    const listing = await this.scanFolder(this.oldFolder);
+    if (!listing) {
+      contentEl.createEl("p", {
+        text: `Couldn't read the folder ${this.oldFolder}/. Nothing to clean up.`,
+      });
+      const row = contentEl.createDiv();
+      row.setAttr(
+        "style",
+        "display: flex; justify-content: flex-end; gap: 8px; margin-top: 1em;",
+      );
+      const ok = row.createEl("button", { text: "OK" });
+      ok.addEventListener("click", () => this.close());
+      return;
+    }
+
+    const { sidecars, unknowns } = listing;
+
+    const intro = contentEl.createEl("p");
+    intro.appendText(`The old folder `);
+    intro.createEl("strong", { text: this.oldFolder + "/" });
+    intro.appendText(
+      ` still exists. Your sidecars have already been copied to the new location — these are the leftovers.`,
+    );
+
+    const counts = contentEl.createEl("p");
+    counts.appendText(
+      `Found ${sidecars.length} sidecar file${sidecars.length === 1 ? "" : "s"}`,
+    );
+    if (unknowns.length > 0) {
+      counts.createEl("strong", {
+        text: ` and ${unknowns.length} non-sidecar file${unknowns.length === 1 ? "" : "s"}`,
+      });
+    }
+    counts.appendText(".");
+
+    let canDelete = unknowns.length === 0;
+
+    if (unknowns.length > 0) {
+      const warnBox = contentEl.createDiv();
+      warnBox.setAttr(
+        "style",
+        "border: 1px solid var(--text-warning, #c0a030); border-radius: 6px; " +
+          "padding: 10px 14px; margin: 0.5em 0 1em 0; " +
+          "background-color: var(--background-secondary);",
+      );
+      const warnTitle = warnBox.createEl("strong", {
+        text: "⚠ Non-sidecar files will also be deleted",
+      });
+      void warnTitle;
+      const list = warnBox.createEl("ul");
+      list.setAttr("style", "margin: 0.5em 0 0.5em 1em; max-height: 200px; overflow-y: auto;");
+      for (const name of unknowns.slice(0, 50)) {
+        list.createEl("li", { text: name });
+      }
+      if (unknowns.length > 50) {
+        list.createEl("li", { text: `…and ${unknowns.length - 50} more` });
+      }
+
+      const confirmRow = contentEl.createEl("label");
+      confirmRow.setAttr(
+        "style",
+        "display: flex; align-items: center; gap: 8px; margin: 0.5em 0 1em 0;",
+      );
+      const check = confirmRow.createEl("input", { type: "checkbox" });
+      confirmRow.createSpan({
+        text: "I understand these files will be permanently deleted.",
+      });
+      check.addEventListener("change", () => {
+        canDelete = check.checked;
+        deleteBtn.disabled = !canDelete;
+      });
+    }
+
+    const buttons = contentEl.createDiv();
+    buttons.setAttr(
+      "style",
+      "display: flex; justify-content: flex-end; gap: 8px; margin-top: 1em;",
+    );
+
+    const keep = buttons.createEl("button", { text: "Keep folder" });
+    keep.addEventListener("click", () => this.close());
+
+    const deleteBtn = buttons.createEl("button", {
+      text: `Delete old folder`,
+    });
+    deleteBtn.setAttr(
+      "style",
+      "background: var(--background-modifier-error); color: var(--text-on-accent);",
+    );
+    deleteBtn.disabled = !canDelete;
+    deleteBtn.addEventListener("click", async () => {
+      if (!canDelete) return;
+      deleteBtn.disabled = true;
+      try {
+        await this.app.vault.adapter.rmdir(this.oldFolder, true);
+        new Notice(`Deleted old folder ${this.oldFolder}/.`);
+      } catch (err) {
+        new Notice(`Could not delete ${this.oldFolder}/. Check permissions.`);
+      }
+      this.close();
+      this.onDone();
+    });
+  }
+
+  private async scanFolder(
+    folder: string,
+  ): Promise<{ sidecars: string[]; unknowns: string[] } | null> {
+    try {
+      const listing = await this.app.vault.adapter.list(folder);
+      const sidecars: string[] = [];
+      const unknowns: string[] = [];
+      for (const f of listing.files ?? []) {
+        const name = f.split("/").pop() ?? f;
+        if (name.endsWith(".md.json")) sidecars.push(name);
+        else unknowns.push(name);
+      }
+      // Subfolders count as unknowns
+      for (const d of listing.folders ?? []) {
+        const name = d.split("/").pop() ?? d;
+        unknowns.push(name + "/ (subfolder)");
+      }
+      return { sidecars, unknowns };
+    } catch {
+      return null;
+    }
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
 // ---- folder-picker suggest ----
 
 // Fuzzy-searchable vault-folder picker, using the modern
@@ -2575,7 +2728,13 @@ class AuthorshipSettingTab extends PluginSettingTab {
       );
       this.plugin.settings.previousSidecarFolderPath = null;
       await this.plugin.saveSettings();
-      this.display();
+      // Offer to clean up the now-stale old folder.
+      new OldFolderCleanupModal(
+        this.app,
+        this.plugin,
+        previous,
+        () => this.display(),
+      ).open();
     });
 
     const leaveBtn = banner.createEl("button", { text: "Leave in place" });
