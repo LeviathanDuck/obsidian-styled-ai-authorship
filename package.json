@@ -1,6 +1,6 @@
 {
   "name": "aistyled-authorship",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "iA Writer-style per-character AI authorship tracking for Obsidian.",
   "main": "main.js",
   "scripts": {
