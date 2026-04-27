@@ -26,7 +26,6 @@ import {
   DATA_JSON_WARN_THRESHOLD,
   DEFAULT_AUTHOR,
   RangeEvent,
-  SidecarDataV2,
   authorOf,
   diffRangeSets,
   generateDeviceId,
@@ -784,7 +783,6 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     await this.ensureDeviceId();
     this.backend = this.buildBackend();
     this.conflictScanner = this.buildConflictScanner();
-    await this.migrateDataJsonOnLoad();
 
     this.registerEditorExtension([
       aiRangeField,
@@ -1421,57 +1419,6 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
     await this.saveSettings();
   }
 
-  // One-shot migration of records left behind in data.json by the
-  // pre-0.2.7 dataJson storage backend. Reads the raw plugin blob,
-  // copies each authorshipV2 entry into the sidecar backend, then
-  // strips the key so subsequent saveSettings doesn't re-persist it.
-  // Idempotent: silently returns when the key is absent or empty.
-  // If any sidecar write fails, the authorshipV2 key is left intact
-  // so the next load can retry.
-  private async migrateDataJsonOnLoad(): Promise<void> {
-    const blob = (await this.loadData()) as Record<string, unknown> | null;
-    if (!blob) return;
-    const raw = blob["authorshipV2"];
-    if (!raw || typeof raw !== "object") return;
-    const map = raw as Record<string, SidecarDataV2>;
-    const entries = Object.entries(map);
-    if (entries.length === 0) {
-      delete blob["authorshipV2"];
-      await this.saveData(blob);
-      delete (this.settings as Record<string, unknown>).authorshipV2;
-      return;
-    }
-    let migrated = 0;
-    for (const [notePath, record] of entries) {
-      try {
-        const result = await this.backend.putRecord(notePath, record);
-        if (result.written) {
-          migrated++;
-        } else {
-          console.warn(
-            "AiStyled-Authorship: data.json migration failed for",
-            notePath,
-            result,
-          );
-          return;
-        }
-      } catch (err) {
-        console.warn(
-          "AiStyled-Authorship: data.json migration error for",
-          notePath,
-          err,
-        );
-        return;
-      }
-    }
-    delete blob["authorshipV2"];
-    await this.saveData(blob);
-    delete (this.settings as Record<string, unknown>).authorshipV2;
-    new Notice(
-      `Ai Styled Authorship: migrated ${migrated} record${migrated === 1 ? "" : "s"} from data.json to sidecar.`,
-    );
-  }
-
   private get pluginFolderSidecarPath(): string {
     // 0.1.8 stored sidecars here; 0.1.9+ migrates them back to vault root.
     return normalizePath(`${this.app.vault.configDir}/plugins/${PLUGIN_ID}/authorship`);
@@ -1590,10 +1537,11 @@ export default class LeftcoastAuthorshipPlugin extends Plugin {
   async loadSettings() {
     const loaded = (await this.loadData()) ?? {};
     this.settings = { ...DEFAULT_SETTINGS, ...loaded };
-    // Defensive: drop dead keys from previous versions so saveSettings
-    // doesn't re-persist them. authorshipV2 (records map under the old
-    // data.json backend) is migrated and stripped in migrateDataJsonOnLoad;
-    // storageBackend was the dropdown removed in 0.2.7.
+    // Defensive: drop the dead storageBackend key (dropdown removed in
+    // 0.2.7) so saveSettings doesn't re-persist it. authorshipV2 records
+    // left behind by the old dataJson backend (also removed in 0.2.7) are
+    // intentionally preserved here so saveSettings doesn't silently
+    // discard them — the data is orphaned but not destroyed.
     delete (this.settings as Record<string, unknown>).storageBackend;
   }
 
